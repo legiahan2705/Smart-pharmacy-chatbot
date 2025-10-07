@@ -62,13 +62,13 @@ export default function Home() {
           <nav className="flex gap-8 items-center">
             <a
               href="/"
-              className="hover:text-blue-200 transition-colors font-medium text-[20px]"
+              className="hover:text-[#072D94] hover:bg-white active:scale-90 transition-transform duration-150 font-medium text-[20px] px-2  rounded-lg"
             >
               {t.header.home}
             </a>
             <a
               href="/signin"
-              className="hover:text-blue-200 transition-colors font-medium text-[20px]"
+              className="hover:text-[#072D94]  font-medium text-[20px] hover:bg-white px-2 rounded-lg active:scale-90 transition-transform duration-150"  
             >
               {t.header.signin}
             </a>
@@ -99,13 +99,13 @@ export default function Home() {
           </p>
           <div className="flex gap-4 justify-center items-center">
             <Link href="/chatbot">
-              <Button className="bg-white border-2 border-white text-[#001A61] hover:bg-blue-50 px-8 py-6 text-lg font-semibold rounded-lg shadow-lg hover:shadow-xl transition-all">
+              <Button className="bg-white border-2 border-white text-[#001A61] hover:bg-blue-50 px-8 py-6 text-lg font-semibold rounded-lg shadow-lg hover:shadow-xl active:scale-90 transition-transform duration-150">
                 {t.main.startChat}
               </Button>
             </Link>
 
             <Link href="/learn_more">
-              <button className="text-white hover:bg-white hover:text-[#001A61] px-8 py-3 text-lg font-semibold rounded-lg transition-all border-2 border-white">
+              <button className="text-white hover:bg-white hover:text-[#001A61] px-8 py-3 text-lg font-semibold rounded-lg active:scale-90 transition-transform duration-150 border-2 border-white">
                 {t.main.learnMore}
               </button>
             </Link>

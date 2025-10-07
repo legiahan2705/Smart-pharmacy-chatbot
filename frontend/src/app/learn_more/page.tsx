@@ -183,13 +183,13 @@ const LearnMore = () => {
           <nav className="flex gap-8 items-center">
             <a
               href="/"
-              className="hover:text-blue-200 transition-colors font-medium text-[20px]"
+              className="hover:text-[#072D94] hover:bg-white active:scale-90 transition-transform duration-150 font-medium text-[20px] px-2  rounded-lg"
             >
               {language === "en" ? "Home" : "Trang chủ"}
             </a>
             <a
               href="/signin"
-              className="hover:text-blue-200 transition-colors font-medium text-[20px]"
+              className="hover:text-[#072D94] hover:bg-white active:scale-90 transition-transform duration-150 font-medium text-[20px] px-2  rounded-lg"
             >
               {language === "en" ? "Sign in" : "Đăng nhập"}
             </a>
@@ -284,7 +284,7 @@ const LearnMore = () => {
 
       {/* CTA Section */}
       <section className="bg-[#DEECFF] py-20">
-        <div className="max-w-4xl mx-auto px-6 text-center">
+        <div className="max-w-5xl mx-auto px-6 text-center">
           <h2 className="text-4xl font-bold mb-6 text-[#001A61]">
             {t.cta.title}
           </h2>
@@ -293,13 +293,13 @@ const LearnMore = () => {
           </p>
           <div className="flex gap-4 justify-center items-center flex-wrap">
             <Link href="/chatbot">
-              <Button className="bg-[#001A61] border-2 border-[#001A61] text-white hover:bg-[#072D94] px-8 py-6 text-lg font-semibold rounded-lg shadow-lg hover:shadow-xl transition-all">
+              <Button className="bg-[#001A61] border-2 border-[#001A61] text-white hover:bg-[#072D94] px-8 py-6 text-lg font-semibold rounded-lg shadow-lg hover:shadow-xl active:scale-90 transition-transform duration-150">
                 {t.cta.startButton}
               </Button>
             </Link>
             <Link
               href="/"
-              className="text-[#001A61] hover:bg-[#001A61] hover:text-white px-8 py-3 text-lg font-semibold rounded-lg border-2 border-[#001A61] transition-all"
+              className="text-[#001A61] hover:bg-[#001A61] hover:text-white px-8 py-3 text-lg font-semibold rounded-lg border-2 border-[#001A61] active:scale-90 transition-transform duration-150"
             >
               {t.cta.backButton}
             </Link>
