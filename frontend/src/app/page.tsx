@@ -85,11 +85,11 @@ export default function Home() {
 
       {/* --- Carousel Section (Full Width) --- */}
       <section className="w-full p-0">
-        <PharmacyCarousel />
+        <PharmacyCarousel language={language} />
       </section>
 
       {/* --- Main Content Section --- */}
-      <main className="flex-1 bg-gradient-to-b from-[#DEECFF] via-[#5f7cca] to-[#001A61] text-white">
+      <main className="flex-1 bg-gradient-to-b from-[#DEECFF] via-[#5f7cca] to-[#001A61] text-white ">
         <div className="max-w-4xl mx-auto px-6 py-16 text-center">
           <h2 className="text-5xl font-bold mb-6 leading-tight">
             {t.main.title}
