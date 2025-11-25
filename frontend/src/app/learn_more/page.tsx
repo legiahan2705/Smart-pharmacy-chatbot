@@ -13,7 +13,7 @@ import {
 } from "lucide-react";
 
 const LearnMore = () => {
-  const [language, setLanguage] = useState<"en" | "vi">("en");
+  const [language, setLanguage] = useState<"en" | "vi">("en"); 
 
   const content = {
     en: {

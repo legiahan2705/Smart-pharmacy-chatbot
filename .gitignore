@@ -1,0 +1,25 @@
+# --- PYTHON BACKEND  ---
+# Bỏ qua môi trường ảo 
+.venv/
+venv/
+env/
+
+# Bỏ qua file rác khi chạy Python
+__pycache__/
+*.pyc
+
+# Bỏ qua file biến môi trường chứa API KEY 
+.env
+.env.local
+
+# Bỏ qua dữ liệu Vector Store 
+faiss_index/
+faiss_index.zip
+
+# --- IDE & HỆ THỐNG  ---
+.vscode/
+.idea/
+.DS_Store
+
+# --- DỮ LIỆU ---
+data/*.json
