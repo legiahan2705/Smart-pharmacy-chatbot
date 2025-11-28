@@ -9,7 +9,6 @@ from pydantic import BaseModel
 
 # --- 2. Imports cho LangChain / LangGraph ---
 from langchain_google_genai import ChatGoogleGenerativeAI
-from langchain_community.embeddings import HuggingFaceEmbeddings
 from langchain_community.vectorstores import FAISS
 from langchain_core.documents import Document
 from langchain_core.prompts import PromptTemplate
@@ -17,6 +16,9 @@ from langchain_core.output_parsers import StrOutputParser
 from langgraph.graph import StateGraph, END
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_google_genai import GoogleGenerativeAIEmbeddings
+# --- Imports cho phần Memory ---
+from langgraph.checkpoint.memory import MemorySaver
+from langchain_core.messages import HumanMessage, AIMessage
 # =======================================================
 # 0. KHỞI TẠO VÀ CÀI ĐẶT
 # =======================================================
@@ -34,6 +36,7 @@ app = FastAPI()
 # 1a. Định nghĩa State 
 class AppState(TypedDict):
     question: str
+    chat_history: list[str]
     expanded_question: str | None
     context: str | None
     answer: str | None
@@ -183,14 +186,16 @@ else:
 prompt_template = """
 Bạn là một trợ lý tư vấn thuốc thông minh của Long Châu.
 Chỉ sử dụng thông tin được cung cấp trong phần "Context" để trả lời câu hỏi.
+Đồng thời, bạn cần dựa vào lịch sử hội thoại để hiểu rõ hơn về ngữ cảnh.
 Tuyệt đối không tự bịa ra thông tin.
+
+Lịch sử hội thoại:
+{chat_history}
 
 Context:
 {context}
 
-Question:
-{question}
-
+Question: {question}
 Answer:
 """
 prompt = PromptTemplate.from_template(prompt_template)
@@ -223,32 +228,47 @@ llm_grader_chain = grade_prompt | grading_llm | StrOutputParser()
 # 1e. TẠO CHAIN MỚI ĐỂ "TRÍCH XUẤT TỪ KHÓA" (THAY VÌ MỞ RỘNG)
 expansion_prompt_template = """
 Bạn là một trợ lý dược sĩ chuyên nghiệp. Nhiệm vụ của bạn là chuyển đổi câu hỏi triệu chứng của người dùng 
-thành các từ khóa tìm kiếm chuyên sâu về THUỐC và DƯỢC PHẨM.
+thành các từ khóa tìm kiếm chuyên sâu để tra cứu trong cơ sở dữ liệu.
+
+Lịch sử trò chuyện (Context):
+{chat_history}
+
+Câu hỏi hiện tại: {question}
 
 QUAN TRỌNG:
 1. Luôn thêm từ khóa "Thuốc", "Điều trị", "Dược phẩm" để tránh tìm ra dụng cụ y tế.
 2. Nếu người dùng mô tả triệu chứng, hãy thêm tên các HOẠT CHẤT (Active Ingredients) phổ biến điều trị triệu chứng đó.
+3. Đọc kỹ "Lịch sử trò chuyện" để hiểu người dùng đang nói về loại thuốc nào (nếu họ dùng từ "nó", "thuốc này", "thuốc đó").
+4. Kết hợp tên thuốc từ lịch sử với câu hỏi hiện tại để tạo từ khóa tìm kiếm.
+5. Nếu câu hỏi hiện tại là chủ đề mới hoàn toàn, hãy bỏ qua lịch sử.
 
 Ví dụ 1:
-Question: Con tôi bị rôm sảy, ngứa ngáy thì có loại kem bôi nào an toàn không?
-Search Query: Thuốc bôi rôm sảy, kem bôi trị ngứa, viêm da, Eumovate, Phenergan, an toàn cho trẻ em, thuốc điều trị
+History: [User: Panadol công dụng gì?, AI: Giảm đau hạ sốt...]
+Question: Thuốc này giá bao nhiêu?
+Search Query: Giá bán Panadol, Panadol giá bao nhiêu, mua thuốc Panadol
 
 Ví dụ 2:
-Question: Tôi bị hắt hơi sổ mũi, chảy nước mũi.
-Search Query: Thuốc trị cảm cúm, thuốc trị sổ mũi, thuốc kháng histamin, Loratadine, Cetirizine, Fexofenadine, điều trị viêm mũi dị ứng
+Question: Con tôi bị rôm sảy.
+Search Query: Thuốc bôi rôm sảy, kem trị ngứa, viêm da, an toàn cho trẻ em
 
-Question: {question}
 Search Query:
 """
 expansion_prompt = PromptTemplate.from_template(expansion_prompt_template)
-# Chain expansion_chain giữ nguyên
 expansion_chain = expansion_prompt | grading_llm | StrOutputParser()
 
 # NODE MỚI ĐỂ CHẠY VIỆC MỞ RỘNG
 async def query_expansion_node(state: AppState):
     print("--- NODE: QUERY EXPANSION ---")
     question = state["question"] # Lấy câu hỏi GỐC
-    expanded_question_raw = await expansion_chain.ainvoke({"question": question})
+    
+    history_list = state.get("chat_history", [])
+    print(f"DEBUG HISTORY (Last 2 turns): {history_list[-2:] if history_list else 'Empty'}")
+    history_str = "\n".join(history_list) if history_list else "Chưa có lịch sử."
+    
+    expanded_question_raw = await expansion_chain.ainvoke({
+        "question": question,
+        "chat_history": history_str 
+    })    
     
     # Xóa bỏ tiền tố "Search Query:" mà LLM có thể thêm vào
     if "Search Query:" in expanded_question_raw:
@@ -315,19 +335,42 @@ async def llm_grade_documents_node(state: AppState):
 
 async def generate_node(state: AppState):
     print("--- NODE: GENERATE ---")
+    
+    current_history = state.get("chat_history", [])
+    print(f"LOG: Độ dài lịch sử hiện tại: {len(current_history)} tin nhắn.")
+    
     question = state["question"]
     context = state["context"]
+    
+    history_list = state.get("chat_history", [])
+    history_str = "\n".join(history_list) if history_list else "Chưa có lịch sử."
+    
     answer = await rag_generation_chain.ainvoke({
         "question": question,
-        "context": context
+        "context": context,
+        "chat_history": history_str
     })
+    
+    new_history_entry = [
+        f"User: {question}",
+        f"AI: {answer}"
+    ]
+    updated_history = history_list + new_history_entry
+    
     print("Answer generated.")
-    return {"answer": answer}
+    return {"answer": answer, "chat_history": updated_history}
 
 async def handle_irrelevant_node(state: AppState):
     print("--- NODE: HANDLE IRRELEVANT ---")
     answer = "Xin lỗi. Tôi không tìm thấy thông tin về loại thuốc này trong cơ sở dữ liệu."
-    return {"answer": answer}
+    
+    # --- Cập nhật lịch sử dù không tìm thấy ---
+    history_list = state.get("chat_history", [])
+    updated_history = history_list + [
+        f"User: {state['question']}",
+        f"AI: {answer}"
+    ]
+    return {"answer": answer, "chat_history": updated_history}
 
 # 1g. Xây dựng Graph (Agent)
 def build_rag_agent():
@@ -356,11 +399,11 @@ def build_rag_agent():
         }
     )
 
-    # Cạnh kết thúc (giữ nguyên)
     workflow.add_edge("generate", END)
     workflow.add_edge("handleIrrelevant", END)
 
-    app = workflow.compile()
+    checkpointer = MemorySaver()
+    app = workflow.compile(checkpointer=checkpointer)
     print("Đã xây dựng RAG Agent (Graph) VỚI QUERY EXPANSION. Backend sẵn sàng!")
     return app
 
@@ -374,14 +417,19 @@ rag_agent = build_rag_agent()
 # 1. Định nghĩa kiểu dữ liệu cho request body (thay thế cho zod.object)
 class ChatRequest(BaseModel):
     question: str
+    thread_id: str = "default_user"
 
 # 2. Tạo endpoint /chat (thay thế cho app.post('/chat', ...))
 @app.post("/chat")
 async def chat_handler(request: ChatRequest):
     print(f"Đang xử lý câu hỏi: {request.question}")
+    config = {"configurable": {"thread_id": request.thread_id}}
     
     # Chạy agent với input
-    result = await rag_agent.ainvoke({"question": request.question})
+    result = await rag_agent.ainvoke(
+        {"question": request.question}, 
+        config=config
+    )
     
     # Trả về câu trả lời
     final_answer = result.get("answer", "Lỗi: Không có câu trả lời.")
