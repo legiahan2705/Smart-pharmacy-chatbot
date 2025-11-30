@@ -1,6 +1,6 @@
 "use client";
 import { useState } from "react";
-import PharmacyCarousel from "@/components/pharmacy_carousel";
+import PharmacyCarousel from "@/components/pharmacy-carousel";
 import { Button } from "@/components/ui/button";
 import Link from "next/link";
 import { Globe } from "lucide-react";
@@ -68,7 +68,7 @@ export default function Home() {
             </a>
             <a
               href="/signin"
-              className="hover:text-[#072D94]  font-medium text-[20px] hover:bg-white px-2 rounded-lg active:scale-90 transition-transform duration-150"  
+              className="hover:text-[#072D94]  font-medium text-[20px] hover:bg-white px-2 rounded-lg active:scale-90 transition-transform duration-150"
             >
               {t.header.signin}
             </a>

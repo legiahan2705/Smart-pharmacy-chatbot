@@ -2,8 +2,10 @@
 
 import { useState, useRef, useEffect } from "react";
 import { Button } from "@/components/ui/button";
-import { Send, Bot, User, Home, Menu, X, Globe } from "lucide-react";
+import { Send, Bot, User, Home, Menu, X, Globe, Trash2 } from "lucide-react";
+import { v4 as uuidv4 } from "uuid"; // Cần cài: npm install uuid @types/uuid
 
+// --- TYPES ---
 interface Message {
   id: string;
   type: "user" | "bot";
@@ -11,15 +13,26 @@ interface Message {
   timestamp: Date;
 }
 
-async function askAgent(userInput: string) {
+interface ChatSession {
+  id: string;
+  title: string;
+  updatedAt: Date;
+}
+
+// --- API CALL ---
+async function askAgent(userInput: string, threadId: string) {
   try {
-    const response = await fetch("http://localhost:8080/chat", {
+    // Sử dụng biến môi trường cho URL
+    const apiUrl = process.env.NEXT_PUBLIC_API_URL || "http://127.0.0.1:8000";
+
+    const response = await fetch(`${apiUrl}/chat`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
         question: userInput,
+        thread_id: threadId, // Gửi thread_id thật xuống BE
       }),
     });
 
@@ -28,38 +41,29 @@ async function askAgent(userInput: string) {
     }
 
     const data = await response.json();
-
-    // data.answer chính là câu trả lời của AI
-    console.log(data.answer);
     return data.answer;
   } catch (error) {
     console.error("Lỗi khi gọi API chat:", error);
-    return "Xin lỗi, tôi đang gặp sự cố. Vui lòng thử lại sau.";
+    return "Xin lỗi, tôi đang gặp sự cố kết nối với server. Vui lòng kiểm tra lại backend.";
   }
 }
 
-// Cách sử dụng:
-// askAgent("Pharmaton có tác dụng phụ gì?");
-
 export default function ChatbotPage() {
+  // --- STATE ---
   const [language, setLanguage] = useState<"en" | "vi">("vi");
-  const [messages, setMessages] = useState<Message[]>([
-    {
-      id: "1",
-      type: "bot",
-      content:
-        language === "vi"
-          ? "Xin chào! Tôi là trợ lý y tế thông minh của Long Châu Pharmacy. Tôi có thể giúp bạn về thông tin thuốc, triệu chứng, hoặc các câu hỏi về sức khỏe. Bạn cần hỗ trợ gì hôm nay?"
-          : "Hello! I am the Smart Medicine Assistant from Long Chau Pharmacy. I can help you with information about medicines, symptoms, or health questions. What can I help you with today?",
-      timestamp: new Date(),
-    },
-  ]);
+  const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [inputValue, setInputValue] = useState("");
   const [isTyping, setIsTyping] = useState(false);
-  const [isSidebarOpen, setIsSidebarOpen] = useState(false);
+
+  // State quản lý Chat thật
+  const [sessions, setSessions] = useState<ChatSession[]>([]); // Danh sách lịch sử bên trái
+  const [activeThreadId, setActiveThreadId] = useState<string>(""); // ID cuộc trò chuyện đang mở
+  const [messages, setMessages] = useState<Message[]>([]); // Tin nhắn của cuộc trò chuyện hiện tại
+
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
+  // --- TEXT CONTENT (Đa ngôn ngữ) ---
   const content = {
     en: {
       sidebar: {
@@ -67,11 +71,9 @@ export default function ChatbotPage() {
         newChat: "+ New conversation",
         history: "CONVERSATION HISTORY",
         home: "Home",
+        empty: "No history yet",
       },
-      header: {
-        title: "Smart Medicine Assistant",
-        status: "● Online",
-      },
+      header: { title: "Smart Medicine Assistant", status: "● Online" },
       quickQuestions: {
         label: "Suggested questions:",
         items: [
@@ -81,11 +83,6 @@ export default function ChatbotPage() {
           "Fever medication for children",
         ],
       },
-      conversationHistory: [
-        { title: "Ask about pain reliever", date: "Today, 10:30" },
-        { title: "High fever symptoms", date: "Yesterday, 14:20" },
-        { title: "Multivitamin", date: "2 days ago" },
-      ],
       input: {
         placeholder: "Type your question...",
         disclaimer:
@@ -98,11 +95,9 @@ export default function ChatbotPage() {
         newChat: "+ Cuộc trò chuyện mới",
         history: "LỊCH SỬ TRÒ CHUYỆN",
         home: "Trang chủ",
+        empty: "Chưa có lịch sử",
       },
-      header: {
-        title: "Trợ Lý Y Tế Thông Minh",
-        status: "● Đang hoạt động",
-      },
+      header: { title: "Trợ Lý Y Tế Thông Minh", status: "● Đang hoạt động" },
       quickQuestions: {
         label: "Câu hỏi gợi ý:",
         items: [
@@ -112,11 +107,6 @@ export default function ChatbotPage() {
           "Thuốc hạ sốt cho trẻ em",
         ],
       },
-      conversationHistory: [
-        { title: "Hỏi về thuốc giảm đau", date: "Hôm nay, 10:30" },
-        { title: "Triệu chứng sốt cao", date: "Hôm qua, 14:20" },
-        { title: "Vitamin tổng hợp", date: "2 ngày trước" },
-      ],
       input: {
         placeholder: "Nhập câu hỏi của bạn...",
         disclaimer:
@@ -124,39 +114,116 @@ export default function ChatbotPage() {
       },
     },
   };
-
   const t = content[language];
 
-  const scrollToBottom = () => {
+  // --- EFFECTS ---
+
+  // 1. Khởi tạo: Load lịch sử từ LocalStorage khi vào trang
+  useEffect(() => {
+    const savedSessions = localStorage.getItem("chat_sessions");
+    if (savedSessions) {
+      const parsedSessions = JSON.parse(savedSessions);
+      // Convert string date back to Date object
+      const formattedSessions = parsedSessions.map((s: any) => ({
+        ...s,
+        updatedAt: new Date(s.updatedAt),
+      }));
+      setSessions(formattedSessions);
+
+      // Nếu có lịch sử, load bài gần nhất. Nếu không, tạo mới.
+      if (formattedSessions.length > 0) {
+        loadSession(formattedSessions[0].id);
+      } else {
+        createNewSession();
+      }
+    } else {
+      createNewSession();
+    }
+  }, []);
+
+  // 2. Auto scroll
+  useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [messages, isTyping]);
+
+  // --- LOGIC CHỨC NĂNG ---
+
+  // Tạo phiên chat mới
+  const createNewSession = () => {
+    const newId = uuidv4();
+    const newSession: ChatSession = {
+      id: newId,
+      title: language === "vi" ? "Cuộc trò chuyện mới" : "New Conversation",
+      updatedAt: new Date(),
+    };
+
+    // Cập nhật state sessions
+    const updatedSessions = [newSession, ...sessions];
+    setSessions(updatedSessions);
+    setActiveThreadId(newId);
+
+    // Reset tin nhắn về mặc định
+    setMessages([getWelcomeMessage(language)]);
+
+    // Lưu session mới vào LocalStorage
+    localStorage.setItem("chat_sessions", JSON.stringify(updatedSessions));
+
+    // Đóng sidebar trên mobile sau khi chọn
+    if (window.innerWidth < 1024) setIsSidebarOpen(false);
   };
 
-  useEffect(() => {
-    scrollToBottom();
-  }, [messages]);
+  // Load nội dung của một phiên chat cũ
+  const loadSession = (threadId: string) => {
+    setActiveThreadId(threadId);
+    const savedMessages = localStorage.getItem(`chat_messages_${threadId}`);
 
-  useEffect(() => {
-    // Update initial bot message when language changes
-    setMessages([
-      {
-        id: "1",
-        type: "bot",
-        content:
-          language === "vi"
-            ? "Xin chào! Tôi là trợ lý y tế thông minh của Long Châu Pharmacy. Tôi có thể giúp bạn về thông tin thuốc, triệu chứng, hoặc các câu hỏi về sức khỏe. Bạn cần hỗ trợ gì hôm nay?"
-            : "Hello! I am the Smart Medicine Assistant from Long Chau Pharmacy. I can help you with information about medicines, symptoms, or health questions. What can I help you with today?",
-        timestamp: new Date(),
-      },
-    ]);
-  }, [language]);
+    if (savedMessages) {
+      const parsed = JSON.parse(savedMessages).map((m: any) => ({
+        ...m,
+        timestamp: new Date(m.timestamp),
+      }));
+      setMessages(parsed);
+    } else {
+      setMessages([getWelcomeMessage(language)]);
+    }
 
-  const toggleLanguage = () => {
-    setLanguage((prev) => (prev === "en" ? "vi" : "en"));
+    if (window.innerWidth < 1024) setIsSidebarOpen(false);
   };
 
-  // HÀM MỚI (ĐÃ KẾT NỐI VỚI AGENT THẬT)
+  // Xóa một phiên chat
+  const deleteSession = (e: React.MouseEvent, sessionId: string) => {
+    e.stopPropagation(); // Ngăn sự kiện click lan ra cha
+    const updatedSessions = sessions.filter((s) => s.id !== sessionId);
+    setSessions(updatedSessions);
+    localStorage.setItem("chat_sessions", JSON.stringify(updatedSessions));
+    localStorage.removeItem(`chat_messages_${sessionId}`);
+
+    // Nếu xóa session đang active, chuyển sang cái khác hoặc tạo mới
+    if (activeThreadId === sessionId) {
+      if (updatedSessions.length > 0) {
+        loadSession(updatedSessions[0].id);
+      } else {
+        createNewSession();
+      }
+    }
+  };
+
+  // Hàm lấy câu chào (helper)
+  const getWelcomeMessage = (lang: "en" | "vi"): Message => ({
+    id: "welcome",
+    type: "bot",
+    content:
+      lang === "vi"
+        ? "Xin chào! Tôi là trợ lý y tế thông minh của Long Châu Pharmacy. Tôi có thể giúp bạn về thông tin thuốc, triệu chứng, hoặc các câu hỏi về sức khỏe. Bạn cần hỗ trợ gì hôm nay?"
+        : "Hello! I am the Smart Medicine Assistant from Long Chau Pharmacy. I can help you with information about medicines, symptoms, or health questions. What can I help you with today?",
+    timestamp: new Date(),
+  });
+
+  // Gửi tin nhắn
   const handleSend = async () => {
     if (!inputValue.trim()) return;
+
+    const currentThreadId = activeThreadId; // Capture ID hiện tại đề phòng user đổi tab nhanh
 
     const userMessage: Message = {
       id: Date.now().toString(),
@@ -165,38 +232,59 @@ export default function ChatbotPage() {
       timestamp: new Date(),
     };
 
-    // Thêm tin nhắn của người dùng vào danh sách
-    setMessages((prev) => [...prev, userMessage]);
+    // 1. Cập nhật UI ngay lập tức
+    const newMessages = [...messages, userMessage];
+    setMessages(newMessages);
     setInputValue("");
-    setIsTyping(true); // Bật "đang gõ..."
+    setIsTyping(true);
 
-    // Sử dụng try...catch...finally để đảm bảo luôn tắt "đang gõ"
+    // 2. Lưu tin nhắn vào LocalStorage cho thread hiện tại
+    localStorage.setItem(
+      `chat_messages_${currentThreadId}`,
+      JSON.stringify(newMessages)
+    );
+
+    // 3. Cập nhật Tiêu đề Session (nếu đây là tin nhắn đầu tiên của user)
+    // Kiểm tra xem session hiện tại có đang là tên mặc định không
+    const currentSessionIndex = sessions.findIndex(
+      (s) => s.id === currentThreadId
+    );
+    if (
+      currentSessionIndex !== -1 &&
+      sessions[currentSessionIndex].messagesCount === undefined
+    ) {
+      // Logic đơn giản: Lấy 30 ký tự đầu làm tiêu đề
+      const updatedSessions = [...sessions];
+      updatedSessions[currentSessionIndex].title =
+        userMessage.content.substring(0, 30) +
+        (userMessage.content.length > 30 ? "..." : "");
+      updatedSessions[currentSessionIndex].updatedAt = new Date();
+      // Đánh dấu là đã đổi tên (trick nhỏ, hoặc chỉ cần check length messages)
+      setSessions(updatedSessions);
+      localStorage.setItem("chat_sessions", JSON.stringify(updatedSessions));
+    }
+
     try {
-      // 1. GỌI AGENT THẬT
-      // (Chúng ta dùng userMessage.content thay vì inputValue vì inputValue đã bị xóa)
-      const botAnswer = await askAgent(userMessage.content);
+      // 4. Gọi API
+      const botAnswer = await askAgent(userMessage.content, currentThreadId);
 
-      // 2. Tạo tin nhắn bot với câu trả lời thật
       const botResponse: Message = {
         id: (Date.now() + 1).toString(),
         type: "bot",
-        content: botAnswer, // <-- Sử dụng câu trả lời thật từ API
+        content: botAnswer,
         timestamp: new Date(),
       };
-      // 3. Thêm tin nhắn của bot vào danh sách
-      setMessages((prev) => [...prev, botResponse]);
+
+      // 5. Cập nhật tin nhắn Bot
+      const finalMessages = [...newMessages, botResponse];
+      setMessages(finalMessages);
+      localStorage.setItem(
+        `chat_messages_${currentThreadId}`,
+        JSON.stringify(finalMessages)
+      );
     } catch (error) {
-      // Xử lý nếu hàm askAgent thất bại (mặc dù nó đã có catch riêng)
-      console.error("Lỗi nghiêm trọng trong handleSend:", error);
-      const errorResponse: Message = {
-        id: (Date.now() + 1).toString(),
-        type: "bot",
-        content: "Xin lỗi, đã có lỗi kết nối. Vui lòng thử lại.",
-        timestamp: new Date(),
-      };
-      setMessages((prev) => [...prev, errorResponse]);
+      console.error(error);
     } finally {
-      // 4. Luôn luôn tắt "đang gõ..." sau khi hoàn tất
       setIsTyping(false);
     }
   };
@@ -213,55 +301,105 @@ export default function ChatbotPage() {
     }
   };
 
+  const toggleLanguage = () => {
+    setLanguage((prev) => (prev === "en" ? "vi" : "en"));
+    // Cập nhật lại câu chào trong message hiện tại nếu nó là tin nhắn duy nhất
+    if (messages.length === 1 && messages[0].id === "welcome") {
+      setMessages([getWelcomeMessage(language === "en" ? "vi" : "en")]);
+    }
+  };
+
   return (
     <div className="flex h-screen bg-gray-50">
       {/* Sidebar */}
       <aside
         className={`${
           isSidebarOpen ? "translate-x-0" : "-translate-x-full"
-        } lg:translate-x-0 fixed lg:static inset-y-0 left-0 z-50 w-80 bg-white border-r border-gray-200 transition-transform duration-300 ease-in-out flex flex-col`}
+        } lg:translate-x-0 fixed lg:static inset-y-0 left-0 z-50 w-80 bg-white border-r border-gray-200 transition-transform duration-300 ease-in-out flex flex-col shadow-lg lg:shadow-none`}
       >
         {/* Sidebar Header */}
         <div className="p-6 border-b border-gray-200">
           <div className="flex items-center justify-between mb-6">
-            <div className="flex items-center gap-3">
+            <div className="flex items-center gap-2">
               <img
                 src="/logo_LongChau.png"
-                alt="Long Chau Logo"
-                className="h-15 w-auto"
+                alt="Logo"
+                className="h-10 w-auto"
+                onError={(e) => (e.currentTarget.style.display = "none")}
               />
-              <h1 className="font-bold text-3xl  text-[#072D94]">
-                {t.sidebar.title}
+              {/* Fallback text nếu ảnh lỗi */}
+              <h1 className="font-bold text-xl text-[#072D94] leading-tight">
+                Long Châu
+                <br />
+                AI Chatbot
               </h1>
             </div>
-
             <button
               onClick={() => setIsSidebarOpen(false)}
-              className="lg:hidden text-gray-500 hover:text-gray-700"
+              className="lg:hidden text-gray-500"
             >
               <X className="w-6 h-6" />
             </button>
           </div>
-          <Button className="w-full bg-[#001A61] hover:bg-[#072D94] text-white">
+          <Button
+            onClick={createNewSession}
+            className="w-full bg-[#001A61] hover:bg-[#072D94] text-white flex gap-2"
+          >
             {t.sidebar.newChat}
           </Button>
         </div>
 
-        {/* Conversation History */}
-        <div className="flex-1 overflow-y-auto p-4">
-          <h3 className="text-sm font-semibold text-gray-500 mb-3 px-2">
+        {/* Conversation History List */}
+        <div className="flex-1 overflow-y-auto p-3">
+          <h3 className="text-xs font-semibold text-gray-500 mb-3 px-2 uppercase tracking-wider">
             {t.sidebar.history}
           </h3>
-          <div className="space-y-2">
-            {t.conversationHistory.map((conv, index) => (
+          <div className="space-y-1">
+            {sessions.length === 0 && (
+              <p className="text-sm text-gray-400 text-center italic mt-4">
+                {t.sidebar.empty}
+              </p>
+            )}
+            {sessions.map((session) => (
               <div
-                key={index}
-                className="p-3 rounded-lg hover:bg-gray-100 cursor-pointer transition-colors"
+                key={session.id}
+                onClick={() => loadSession(session.id)}
+                className={`group flex items-center justify-between p-3 rounded-lg cursor-pointer transition-all duration-200 ${
+                  activeThreadId === session.id
+                    ? "bg-blue-50 border-l-4 border-[#072D94] shadow-sm"
+                    : "hover:bg-gray-100 border-l-4 border-transparent"
+                }`}
               >
-                <p className="text-sm font-medium text-gray-800 truncate">
-                  {conv.title}
-                </p>
-                <p className="text-xs text-gray-500 mt-1">{conv.date}</p>
+                <div className="flex-1 min-w-0 pr-2">
+                  <p
+                    className={`text-sm font-medium truncate ${
+                      activeThreadId === session.id
+                        ? "text-[#072D94]"
+                        : "text-gray-700"
+                    }`}
+                  >
+                    {session.title}
+                  </p>
+                  <p className="text-xs text-gray-400 mt-0.5">
+                    {new Date(session.updatedAt).toLocaleDateString(
+                      language === "vi" ? "vi-VN" : "en-US",
+                      {
+                        month: "short",
+                        day: "numeric",
+                        hour: "2-digit",
+                        minute: "2-digit",
+                      }
+                    )}
+                  </p>
+                </div>
+                {/* Nút xóa session */}
+                <button
+                  onClick={(e) => deleteSession(e, session.id)}
+                  className="opacity-0 group-hover:opacity-100 p-1.5 hover:bg-red-100 hover:text-red-600 rounded-md transition-all"
+                  title="Xóa cuộc trò chuyện"
+                >
+                  <Trash2 className="w-4 h-4" />
+                </button>
               </div>
             ))}
           </div>
@@ -271,17 +409,15 @@ export default function ChatbotPage() {
         <div className="p-4 border-t border-gray-200">
           <a
             href="/"
-            className="flex items-center gap-3 p-3 rounded-lg hover:bg-gray-100 transition-colors"
+            className="flex items-center gap-3 p-3 rounded-lg hover:bg-gray-100 transition-colors text-gray-700"
           >
             <Home className="w-5 h-5 text-[#001A61]" />
-            <span className="text-sm font-medium text-gray-700">
-              {t.sidebar.home}
-            </span>
+            <span className="text-sm font-medium">{t.sidebar.home}</span>
           </a>
         </div>
       </aside>
 
-      {/* Overlay for mobile */}
+      {/* Overlay mobile */}
       {isSidebarOpen && (
         <div
           className="fixed inset-0 bg-black bg-opacity-50 z-40 lg:hidden"
@@ -290,50 +426,51 @@ export default function ChatbotPage() {
       )}
 
       {/* Main Chat Area */}
-      <main className="flex-1 flex flex-col">
-        {/* Chat Header */}
-        <header className="bg-white border-b border-gray-200 px-6 py-4 flex items-center justify-between gap-4">
+      <main className="flex-1 flex flex-col h-full w-full">
+        {/* Header */}
+        <header className="bg-white border-b border-gray-200 px-6 py-4 flex items-center justify-between shadow-sm z-10">
           <div className="flex items-center gap-4">
             <button
               onClick={() => setIsSidebarOpen(true)}
-              className="lg:hidden text-gray-600 hover:text-gray-800"
+              className="lg:hidden text-gray-600"
             >
               <Menu className="w-6 h-6" />
             </button>
             <div className="flex items-center gap-3">
-              <div className="w-10 h-10 rounded-full bg-[#001A61] flex items-center justify-center">
+              <div className="w-10 h-10 rounded-full bg-[#001A61] flex items-center justify-center shadow-md">
                 <Bot className="w-6 h-6 text-white" />
               </div>
               <div>
-                <h1 className="font-bold text-lg text-gray-800">
+                <h1 className="font-bold text-lg text-gray-800 leading-tight">
                   {t.header.title}
                 </h1>
-                <p className="text-sm text-green-600">{t.header.status}</p>
+                <p className="text-xs text-green-600 font-medium flex items-center gap-1">
+                  <span className="w-2 h-2 bg-green-500 rounded-full animate-pulse"></span>
+                  {t.header.status}
+                </p>
               </div>
             </div>
           </div>
-
-          {/* Language Toggle Button */}
           <button
             onClick={toggleLanguage}
-            className="flex items-center gap-2 px-4 py-2 bg-[#072D94] text-white rounded-lg hover:bg-[#001A61] transition-colors font-medium"
+            className="flex items-center gap-2 px-3 py-1.5 bg-gray-100 text-[#072D94] rounded-full hover:bg-gray-200 transition-colors text-sm font-bold border border-gray-200"
           >
-            <Globe className="w-5 h-5" />
-            {language === "en" ? "VI" : "EN"}
+            <Globe className="w-4 h-4" />
+            {language === "en" ? "VN" : "EN"}
           </button>
         </header>
 
-        {/* Messages Container */}
-        <div className="flex-1 overflow-y-auto p-6 space-y-6">
+        {/* Messages List */}
+        <div className="flex-1 overflow-y-auto p-4 md:p-6 space-y-6 bg-gray-50/50">
           {messages.map((message) => (
             <div
               key={message.id}
               className={`flex gap-3 ${
                 message.type === "user" ? "flex-row-reverse" : "flex-row"
-              }`}
+              } animate-in fade-in slide-in-from-bottom-2 duration-300`}
             >
               <div
-                className={`w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0 ${
+                className={`w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0 shadow-sm ${
                   message.type === "user" ? "bg-[#072D94]" : "bg-[#001A61]"
                 }`}
               >
@@ -346,21 +483,21 @@ export default function ChatbotPage() {
               <div
                 className={`flex flex-col ${
                   message.type === "user" ? "items-end" : "items-start"
-                } max-w-2xl`}
+                } max-w-[85%] md:max-w-2xl`}
               >
                 <div
-                  className={`rounded-2xl px-4 py-3 ${
+                  className={`rounded-2xl px-5 py-3.5 shadow-sm ${
                     message.type === "user"
-                      ? "bg-[#072D94] text-white"
-                      : "bg-white border border-gray-200 text-gray-800"
+                      ? "bg-[#072D94] text-white rounded-br-none"
+                      : "bg-white border border-gray-200 text-gray-800 rounded-bl-none"
                   }`}
                 >
-                  <p className="whitespace-pre-wrap leading-relaxed">
+                  <p className="whitespace-pre-wrap leading-relaxed text-[15px]">
                     {message.content}
                   </p>
                 </div>
-                <span className="text-xs text-gray-500 mt-1 px-2">
-                  {message.timestamp.toLocaleTimeString(
+                <span className="text-[10px] text-gray-400 mt-1.5 px-1">
+                  {new Date(message.timestamp).toLocaleTimeString(
                     language === "vi" ? "vi-VN" : "en-US",
                     { hour: "2-digit", minute: "2-digit" }
                   )}
@@ -369,13 +506,14 @@ export default function ChatbotPage() {
             </div>
           ))}
 
+          {/* Typing Indicator */}
           {isTyping && (
-            <div className="flex gap-3">
+            <div className="flex gap-3 animate-pulse">
               <div className="w-8 h-8 rounded-full bg-[#001A61] flex items-center justify-center flex-shrink-0">
                 <Bot className="w-5 h-5 text-white" />
               </div>
-              <div className="bg-white border border-gray-200 rounded-2xl px-4 py-3">
-                <div className="flex gap-1">
+              <div className="bg-white border border-gray-200 rounded-2xl px-4 py-3 rounded-bl-none shadow-sm">
+                <div className="flex gap-1.5">
                   <div
                     className="w-2 h-2 bg-gray-400 rounded-full animate-bounce"
                     style={{ animationDelay: "0ms" }}
@@ -395,10 +533,10 @@ export default function ChatbotPage() {
           <div ref={messagesEndRef} />
         </div>
 
-        {/* Quick Questions */}
-        {messages.length === 1 && (
-          <div className="px-6 pb-4">
-            <p className="text-sm text-gray-600 mb-3">
+        {/* Quick Suggestions */}
+        {messages.length === 1 && !isTyping && (
+          <div className="px-6 pb-2">
+            <p className="text-xs text-gray-500 mb-3 uppercase tracking-wide font-semibold ml-1">
               {t.quickQuestions.label}
             </p>
             <div className="flex flex-wrap gap-2">
@@ -406,7 +544,7 @@ export default function ChatbotPage() {
                 <button
                   key={index}
                   onClick={() => handleQuickQuestion(question)}
-                  className="px-4 py-2 bg-white border border-gray-300 rounded-full text-sm text-gray-700 hover:bg-gray-50 hover:border-[#072D94] transition-colors"
+                  className="px-4 py-2 bg-white border border-gray-200 rounded-full text-sm text-gray-600 hover:bg-[#072D94] hover:text-white hover:border-[#072D94] transition-all shadow-sm"
                 >
                   {question}
                 </button>
@@ -416,29 +554,25 @@ export default function ChatbotPage() {
         )}
 
         {/* Input Area */}
-        <div className="bg-white border-t border-gray-200 p-4">
-          <div className="max-w-4xl mx-auto">
-            <div className="flex gap-3 items-end">
-              <div className="flex-1 relative">
-                <input
-                  ref={inputRef}
-                  type="text"
-                  value={inputValue}
-                  onChange={(e) => setInputValue(e.target.value)}
-                  onKeyPress={handleKeyPress}
-                  placeholder={t.input.placeholder}
-                  className="w-full px-4 py-3 pr-12 rounded-xl border border-gray-300 focus:outline-none focus:ring-2 focus:ring-[#072D94] focus:border-transparent resize-none"
-                />
-              </div>
-              <Button
-                onClick={handleSend}
-                disabled={!inputValue.trim() || isTyping}
-                className="bg-[#001A61] hover:bg-[#072D94] text-white px-6 py-3 rounded-xl disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-              >
-                <Send className="w-5 h-5" />
-              </Button>
-            </div>
-            <p className="text-xs text-gray-500 mt-2 text-center">
+        <div className="bg-white border-t border-gray-200 p-4 md:p-5">
+          <div className="max-w-4xl mx-auto relative">
+            <input
+              ref={inputRef}
+              type="text"
+              value={inputValue}
+              onChange={(e) => setInputValue(e.target.value)}
+              onKeyPress={handleKeyPress}
+              placeholder={t.input.placeholder}
+              className="w-full pl-5 pr-14 py-3.5 rounded-full border border-gray-300 focus:outline-none focus:ring-2 focus:ring-[#072D94]/20 focus:border-[#072D94] shadow-sm text-gray-700 transition-all"
+            />
+            <Button
+              onClick={handleSend}
+              disabled={!inputValue.trim() || isTyping}
+              className="absolute right-2 top-1.5 bottom-1.5 bg-[#001A61] hover:bg-[#072D94] text-white rounded-full w-10 h-10 p-0 flex items-center justify-center disabled:opacity-50 disabled:cursor-not-allowed transition-all shadow-md"
+            >
+              <Send className="w-4 h-4 ml-0.5" />
+            </Button>
+            <p className="text-[10px] text-gray-400 mt-2 text-center select-none">
               {t.input.disclaimer}
             </p>
           </div>
@@ -447,3 +581,4 @@ export default function ChatbotPage() {
     </div>
   );
 }
+import PharmacyCarousel from "@/components/pharmacy-carousel";

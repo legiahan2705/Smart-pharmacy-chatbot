@@ -5,6 +5,7 @@ from typing import TypedDict, Literal
 
 # --- 1. Imports cho FastAPI ---
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel 
 
 # --- 2. Imports cho LangChain / LangGraph ---
@@ -31,6 +32,21 @@ load_dotenv()
 
 # Khởi tạo app FastAPI
 app = FastAPI()
+
+# --- CẤU HÌNH CORS ---
+# Cho phép Frontend (localhost:3000) gọi vào Backend
+origins = [
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+]
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=origins,       # Cho phép các nguồn trên
+    allow_credentials=True,
+    allow_methods=["*"],         # Cho phép tất cả các method (GET, POST...)
+    allow_headers=["*"],         # Cho phép tất cả header
+)
 
 # =======================================================
 # 1. PHẦN LANGGRAPH VÀ RAG AGENT
@@ -360,7 +376,7 @@ async def query_expansion_node(state: AppState):
     # 1. HARD GUARDRAIL: Kiểm tra từ khóa nguy hiểm
     # Danh sách các từ khóa cấm kỵ
     danger_keywords = [
-        "tự tử", "muốn chết", "tự sát", "uống bao nhiêu thì chết", "liều chết", "cách chết", "tự vẫn", "quyên sinh", "chết người" 
+        "tự tử", "muốn chết", "tự sát", "uống bao nhiêu thì chết", "liều chết", "cách chết", "tự vẫn", "quyên sinh", "chết người", "đầu đo", "cắt cổ", "uống thuốc độc", "uống thuốc ngủ để chết", "tự làm hại bản thân"
     ]
     
     # Nếu câu hỏi chứa từ khóa nguy hiểm
