@@ -16,9 +16,12 @@ from langchain_core.output_parsers import StrOutputParser
 from langgraph.graph import StateGraph, END
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_google_genai import GoogleGenerativeAIEmbeddings
+from langchain_google_genai import HarmBlockThreshold, HarmCategory
 # --- Imports cho phần Memory ---
 from langgraph.checkpoint.memory import MemorySaver
 from langchain_core.messages import HumanMessage, AIMessage
+import pandas as pd
+import re
 # =======================================================
 # 0. KHỞI TẠO VÀ CÀI ĐẶT
 # =======================================================
@@ -33,6 +36,81 @@ app = FastAPI()
 # 1. PHẦN LANGGRAPH VÀ RAG AGENT
 # =======================================================
 
+# --- ROUTER CHAIN ---
+class RouteQuery(BaseModel):
+    """Route a user query to the most relevant datasource."""
+    datasource: Literal["vector_search", "structured_analysis"]
+
+# Prompt để LLM chọn đường đi
+router_system_prompt = """
+Bạn là chuyên gia định tuyến câu hỏi.
+- Nếu người dùng hỏi về thông tin mô tả, công dụng, cách dùng, tác dụng phụ, thành phần -> Chọn 'vector_search'.
+- Nếu người dùng hỏi về GIÁ CẢ (rẻ nhất, đắt nhất, bao nhiêu tiền), SỐ LƯỢNG (có bao nhiêu loại), SO SÁNH giá, 
+hoặc LỌC theo tiêu chí (nước sản xuất, dạng bào chế) -> Chọn 'structured_analysis'.
+"""
+router_prompt = PromptTemplate.from_template(
+    f"{router_system_prompt}\nQuestion: {{question}}"
+)
+
+# Sử dụng structured output (function calling) để đảm bảo kết quả chuẩn
+llm_router = ChatGoogleGenerativeAI(model="gemini-2.5-flash", temperature=0)
+structured_llm_router = llm_router.with_structured_output(RouteQuery)
+router_chain = router_prompt | structured_llm_router
+
+# I. Sử dụng khi người dùng hỏi về GIÁ CẢ, SỐ LƯỢNG, SO SÁNH
+# --- HÀM TẢI VÀ LÀM SẠCH DỮ LIỆU CHO PANDAS ---
+def load_and_clean_data():
+    source_json_path = "data/longchau_selected.json"
+    try:
+        with open(source_json_path, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+        
+        # 1. Chuẩn hóa Key trước khi tạo DataFrame
+        # Vì key "Thành phần..." thay đổi theo tên thuốc, ta cần đưa về tên chuẩn
+        normalized_data = []
+        for item in data:
+            new_item = item.copy()
+            for key in item.keys():
+                # Chuẩn hóa cột Thành phần
+                if key.startswith("Thành phần"):
+                    new_item["Thành phần"] = item[key]
+                # Chuẩn hóa cột Công dụng
+                elif key.startswith("Công dụng"):
+                    new_item["Công dụng"] = item[key]
+            normalized_data.append(new_item)
+
+        df = pd.DataFrame(normalized_data)
+        
+        # 2. Làm sạch cột Giá bán (Tạo cột price_int)
+        def clean_price(price_str):
+            if not price_str: return 0
+            # Giữ lại số, loại bỏ 'đ', '.', ',', 'Hộp'...
+            digits = re.sub(r'[^\d]', '', str(price_str))
+            if digits:
+                return int(digits)
+            return 0 # Giá là "Liên hệ" hoặc rỗng -> coi là 0
+
+        df['price_int'] = df['Giá bán'].apply(clean_price)
+        
+        # 3. Điền giá trị trống cho các cột quan trọng để tránh lỗi code Python
+        columns_to_fill = ['Nước sản xuất', 'Xuất xứ thương hiệu', 'Danh mục', 'Dạng bào chế', 'Quy cách', 'Thành phần']
+        for col in columns_to_fill:
+             if col in df.columns:
+                df[col] = df[col].fillna('')
+             else:
+                df[col] = '' # Tạo cột rỗng nếu data thiếu hẳn trường này
+        
+        print(f"Đã tải DataFrame thành công! Số lượng sản phẩm: {len(df)}")
+        return df
+
+    except Exception as e:
+        print(f"Lỗi tải dữ liệu Pandas: {e}")
+        return pd.DataFrame()
+
+# Khởi tạo DataFrame toàn cục
+global_df = load_and_clean_data()
+
+# II. Sử dụng khi người dùng hỏi về THÔNG TIN THUỐC
 # 1a. Định nghĩa State 
 class AppState(TypedDict):
     question: str
@@ -41,9 +119,19 @@ class AppState(TypedDict):
     context: str | None
     answer: str | None
     contextRelevance: Literal["yes", "no"] | None
+    is_unsafe: bool | None
 
 # 1b. Khởi tạo LLM, Embeddings, và Retriever
-llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash", temperature=0.3)
+llm = ChatGoogleGenerativeAI(
+    model="gemini-2.5-flash", # Lưu ý: Dùng tên model chuẩn 1.5
+    temperature=0.3,
+    safety_settings={
+        HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_LOW_AND_ABOVE, # Chặn ngay cả nguy cơ thấp
+        HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_LOW_AND_ABOVE,
+        HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_LOW_AND_ABOVE,
+        HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_LOW_AND_ABOVE,
+    }
+)
 print("Đang tải mô hình Google Embeddings...")
 embeddings = GoogleGenerativeAIEmbeddings(
     model="models/text-embedding-004", # Hoặc "models/embedding-001"
@@ -185,9 +273,17 @@ else:
 # 1c. Chuẩn bị RAG Chain (phần generate)
 prompt_template = """
 Bạn là một trợ lý tư vấn thuốc thông minh của Long Châu.
-Chỉ sử dụng thông tin được cung cấp trong phần "Context" để trả lời câu hỏi.
-Đồng thời, bạn cần dựa vào lịch sử hội thoại để hiểu rõ hơn về ngữ cảnh.
-Tuyệt đối không tự bịa ra thông tin.
+
+NGUYÊN TẮC AN TOÀN TUYỆT ĐỐI (SAFETY GUARDRAILS):
+1. TỰ TỬ & LÀM HẠI BẢN THÂN: Nếu người dùng hỏi về liều lượng gây chết người, cách tự tử, uống bao nhiêu thì chết, hoặc cách sử dụng thuốc để gây hại -> BẠN PHẢI TỪ CHỐI TRẢ LỜI.
+   - Câu trả lời bắt buộc: "Tôi không thể cung cấp thông tin này. Nếu bạn hoặc ai đó đang gặp nguy hiểm, vui lòng gọi ngay cấp cứu 115 hoặc đến cơ sở y tế gần nhất."
+2. QUÁ LIỀU/UỐNG NHẦM (Overdose): 
+   - Nếu người dùng lỡ uống quá liều, hãy dựa vào Context để xem thuốc đó có độc tính cao không.
+   - Luôn bắt đầu bằng câu: "⚠️ Lưu ý: Thông tin chỉ mang tính tham khảo. Bạn nên liên hệ ngay với bác sĩ hoặc dược sĩ để được đánh giá chính xác."
+   - Sau đó cung cấp thông tin về triệu chứng quá liều và cách xử trí (nếu có trong Context).
+3. KHÔNG THAY THẾ BÁC SĨ: Với các triệu chứng nghiêm trọng (khó thở, đau ngực dữ dội, nôn ra máu...), hãy khuyên người dùng đi khám bác sĩ ngay lập tức thay vì chỉ gợi ý thuốc.
+4. KHÔNG BỊA ĐẶT: Chỉ trả lời dựa trên Context và Lịch sử. Nếu không có thông tin -> Trả lời không biết một cách lịch sự.
+5. Đồng thời, bạn cần dựa vào lịch sử hội thoại để hiểu rõ hơn về ngữ cảnh.
 
 Lịch sử hội thoại:
 {chat_history}
@@ -261,6 +357,24 @@ async def query_expansion_node(state: AppState):
     print("--- NODE: QUERY EXPANSION ---")
     question = state["question"] # Lấy câu hỏi GỐC
     
+    # 1. HARD GUARDRAIL: Kiểm tra từ khóa nguy hiểm
+    # Danh sách các từ khóa cấm kỵ
+    danger_keywords = [
+        "tự tử", "muốn chết", "tự sát", "uống bao nhiêu thì chết", "liều chết", "cách chết", "tự vẫn", "quyên sinh", "chết người" 
+    ]
+    
+    # Nếu câu hỏi chứa từ khóa nguy hiểm
+    if any(keyword in question.lower() for keyword in danger_keywords):
+        print("!!! SAFETY ALERT: Phát hiện ý định nguy hiểm !!!")
+        # Chúng ta có thể trả về một cờ đặc biệt hoặc xử lý ngay tại đây
+        # Để đơn giản, ta gán một câu hỏi "vô hại" để RAG không tìm gì cả, 
+        # nhưng tốt nhất là trả về một trạng thái để các node sau biết mà từ chối.
+        return {
+            "expanded_question": None,
+            "answer": "Tôi phát hiện nội dung liên quan đến an toàn tính mạng. Vui lòng gọi ngay 115 hoặc đến cơ sở y tế gần nhất. Tôi không thể hỗ trợ yêu cầu này.",
+            "is_unsafe": True
+        }
+    
     history_list = state.get("chat_history", [])
     print(f"DEBUG HISTORY (Last 2 turns): {history_list[-2:] if history_list else 'Empty'}")
     history_str = "\n".join(history_list) if history_list else "Chưa có lịch sử."
@@ -289,6 +403,11 @@ async def retrieve_node(state: AppState):
     print("--- NODE: RETRIEVE ---")
     # Lấy câu hỏi MỚI từ State
     question_to_search = state["expanded_question"]
+    
+    # --- XỬ LÝ SAFETY VIOLATION ---
+    if question_to_search == "SAFETY_VIOLATION":
+        print("Bỏ qua tìm kiếm do vi phạm an toàn.")
+        return {"context": "SAFETY_WARNING"}
     
     print(f"Searching database for: {question_to_search}") # In ra để debug
     relevant_docs = await retriever.ainvoke(question_to_search)
@@ -340,24 +459,39 @@ async def generate_node(state: AppState):
     print(f"LOG: Độ dài lịch sử hiện tại: {len(current_history)} tin nhắn.")
     
     question = state["question"]
-    context = state["context"]
+    context = state.get("context", "")
     
-    history_list = state.get("chat_history", [])
-    history_str = "\n".join(history_list) if history_list else "Chưa có lịch sử."
+    if context == "SAFETY_WARNING":
+        answer = "Tôi là AI tư vấn thuốc, tôi không thể cung cấp thông tin về liều gây hại hoặc tự tử. Vui lòng gọi ngay 115 hoặc đến cơ sở y tế gần nhất để được hỗ trợ."
     
-    answer = await rag_generation_chain.ainvoke({
-        "question": question,
-        "context": context,
-        "chat_history": history_str
-    })
-    
+    else:
+        # 2. Cố gắng sinh câu trả lời từ LLM
+        try:
+            # Chuẩn bị input cho chain
+            history_list = state.get("chat_history", [])
+            history_str = "\n".join(history_list) if history_list else "Chưa có lịch sử."
+            
+            # Gọi LLM (Có thể bị Google chặn tại đây nếu nội dung nguy hiểm)
+            answer = await rag_generation_chain.ainvoke({
+                "question": question,
+                "context": context,
+                "chat_history": history_str
+            })
+            
+        except Exception as e:
+            # 3. BẮT LỖI KHI GEMINI CHẶN (SAFETY BLOCK)
+            print(f"!!! LỖI SINH CÂU TRẢ LỜI (Có thể do Safety Filter): {e}")
+            # Gán giá trị mặc định cho answer để không bị lỗi UnboundLocalError
+            answer = "Xin lỗi, tôi không thể trả lời câu hỏi này do vi phạm tiêu chuẩn an toàn về y tế và sức khỏe. Vui lòng tham khảo ý kiến bác sĩ trực tiếp."
+
+    # 4. Cập nhật lịch sử và trả về kết quả
     new_history_entry = [
         f"User: {question}",
         f"AI: {answer}"
     ]
-    updated_history = history_list + new_history_entry
+    updated_history = current_history + new_history_entry
     
-    print("Answer generated.")
+    print("Answer generated")
     return {"answer": answer, "chat_history": updated_history}
 
 async def handle_irrelevant_node(state: AppState):
@@ -372,6 +506,91 @@ async def handle_irrelevant_node(state: AppState):
     ]
     return {"answer": answer, "chat_history": updated_history}
 
+# --- NODE MỚI: STRUCTURED ANALYSIS (PANDAS) ---
+# --- SỬA LẠI BIẾN NÀY (Copy đè vào biến cũ) ---
+
+pandas_prompt_template = """
+Bạn có một pandas DataFrame tên là `df` chứa dữ liệu thuốc.
+Các cột quan trọng cần dùng: 
+- 'Tên thuốc'
+- 'price_int' (Giá bán dạng số nguyên. 0 nghĩa là "Liên hệ nhà thuốc").
+- 'Giá bán' (Giá dạng chuỗi hiển thị, ví dụ: "570.000đ").
+- 'Danh mục' (Ví dụ: "Dầu cá, Omega 3, DHA", "Thuốc giảm đau").
+- 'Xuất xứ thương hiệu' (Ví dụ: "Hoa Kỳ", "Pháp").
+- 'Nước sản xuất' (Ví dụ: "Ba Lan", "Việt Nam").
+- 'Dạng bào chế' (Viên nén, Siro, Viên nang mềm...).
+- 'Quy cách' (Ví dụ: "Hộp 6 Vỉ x 20 Viên").
+
+Nhiệm vụ: Viết MỘT dòng code Python để lọc dữ liệu và trả lời câu hỏi.
+Kết quả phải được gán vào biến `result`.
+
+QUY TẮC QUAN TRỌNG:
+1. Khi tìm "Rẻ nhất" (nsmallest), PHẢI loại bỏ giá bằng 0: `df[df['price_int'] > 0]`.
+2. Khi tìm theo "Xuất xứ" (Ví dụ: Thuốc Mỹ), hãy tìm trong CẢ 2 CỘT: `Xuất xứ thương hiệu` HOẶC `Nước sản xuất`.
+3. Khi tìm theo tên bệnh/triệu chứng (Ví dụ: đau đầu, bổ não), PHẢI tìm trong CẢ 3 CỘT: `Danh mục` HOẶC `Tên thuốc` HOẶC `Công dụng`.4. Luôn hiển thị cột `Quy cách` trong kết quả để người dùng so sánh số lượng.
+4. Luôn hiển thị cột `Quy cách` trong kết quả.
+
+Ví dụ 1:
+Question: Tìm 3 loại thuốc Omega 3 rẻ nhất.
+Python: result = df[(df['Danh mục'].str.contains('Omega 3', case=False, na=False)) & (df['price_int'] > 0)].nsmallest(3, 'price_int')[['Tên thuốc', 'Giá bán', 'Quy cách', 'Xuất xứ thương hiệu']].to_string()
+
+Ví dụ 2 (SỬA LỖI TẠI ĐÂY: Dùng {{ và }} ):
+Question: Có bao nhiêu loại thuốc của Mỹ?
+Python: result = f"Có {{len(df[(df['Nước sản xuất'].str.contains('Mỹ|Hoa Kỳ|USA', case=False, na=False)) | (df['Xuất xứ thương hiệu'].str.contains('Mỹ|Hoa Kỳ|USA', case=False, na=False))])}} thuốc có xuất xứ hoặc thương hiệu Mỹ."
+
+Ví dụ 3:
+Question: Liệt kê các thuốc dạng Siro giá dưới 50000.
+Python: result = df[(df['Dạng bào chế'].str.contains('Siro', case=False, na=False)) & (df['price_int'] > 0) & (df['price_int'] < 50000)][['Tên thuốc', 'Giá bán', 'Quy cách']].to_string()
+
+Question: {question}
+Python:
+"""
+
+# Các dòng dưới giữ nguyên
+pandas_prompt = PromptTemplate.from_template(pandas_prompt_template)
+pandas_chain = pandas_prompt | llm | StrOutputParser()
+
+async def structured_analysis_node(state: AppState):
+    print("--- NODE: STRUCTURED ANALYSIS (PANDAS) ---")
+    question = state["question"]
+    
+    # 1. Nhờ LLM sinh code Python
+    generated_code = await pandas_chain.ainvoke({"question": question})
+    
+    # Làm sạch code (bỏ markdown ```python ... ```)
+    clean_code = generated_code.replace("```python", "").replace("```", "").strip()
+    print(f"Generated Python Code: {clean_code}")
+    
+    # 2. Thực thi code (EXEC) - Lưu ý: Chỉ dùng cho demo/nội bộ
+    # Cần biến result để hứng kết quả
+    local_vars = {"df": global_df, "result": None}
+    
+    try:
+        exec(clean_code, {}, local_vars)
+        result = local_vars["result"]
+        
+        # Nếu result là DataFrame hoặc Series, chuyển thành string
+        if isinstance(result, (pd.DataFrame, pd.Series)):
+            final_answer = result.to_string()
+        else:
+            final_answer = str(result)
+            
+        # Thêm lời dẫn cho tự nhiên
+        final_answer = f"Dựa trên phân tích số liệu:\n{final_answer}"
+        
+    except Exception as e:
+        final_answer = f"Xin lỗi, tôi gặp lỗi khi tính toán số liệu: {str(e)}"
+        print(f"Pandas Error: {e}")
+
+    # Cập nhật lịch sử (quan trọng để giữ mạch hội thoại)
+    history_list = state.get("chat_history", [])
+    updated_history = history_list + [
+        f"User: {question}",
+        f"AI: {final_answer}"
+    ]
+    
+    return {"answer": final_answer, "chat_history": updated_history}
+
 # 1g. Xây dựng Graph (Agent)
 def build_rag_agent():
     workflow = StateGraph(AppState)
@@ -381,12 +600,42 @@ def build_rag_agent():
     workflow.add_node("gradeDocuments", llm_grade_documents_node)
     workflow.add_node("generate", generate_node)
     workflow.add_node("handleIrrelevant", handle_irrelevant_node)
+    workflow.add_node("structured_analysis", structured_analysis_node)
 
     # Đặt điểm bắt đầu MỚI
     workflow.set_entry_point("expand_query") 
     
+    # --- LOGIC ROUTING MỚI ---
+    # Thay vì fix cứng từ expand -> retrieve, ta dùng hàm định tuyến
+    def route_decision(state):
+        # 1. KIỂM TRA AN TOÀN TRƯỚC TIÊN
+        if state.get("is_unsafe"):
+            print("--- ROUTING: UNSAFE DETECTED -> END ---")
+            return END
+        
+        # 2. SỬ DỤNG ROUTER CHAIN ĐỂ CHỌN ĐƯỜNG ĐI
+        question = state["question"]
+        print("--- ROUTING ---")
+        decision = router_chain.invoke({"question": question})
+        print(f"Destination: {decision.datasource}")
+        
+        if decision.datasource == "structured_analysis":
+            return "structured_analysis"
+        else:
+            return "retrieve"
+
+    workflow.add_conditional_edges(
+        "expand_query",
+        route_decision,
+        {
+            "structured_analysis": "structured_analysis",
+            "retrieve": "retrieve",
+            END: END
+        }
+    )
+    
     # Đấu nối luồng mới
-    workflow.add_edge("expand_query", "retrieve") # 1. Mở rộng câu hỏi
+    # workflow.add_edge("expand_query", "retrieve") # 1. Mở rộng câu hỏi
     workflow.add_edge("retrieve", "gradeDocuments") # 2. Tìm kiếm
 
     # Cạnh có điều kiện (giữ nguyên)
@@ -401,6 +650,7 @@ def build_rag_agent():
 
     workflow.add_edge("generate", END)
     workflow.add_edge("handleIrrelevant", END)
+    workflow.add_edge("structured_analysis", END)
 
     checkpointer = MemorySaver()
     app = workflow.compile(checkpointer=checkpointer)
