@@ -1,5 +1,5 @@
 # --- 1. CÀI ĐẶT THƯ VIỆN ---
-!pip install -q langchain langchain-community faiss-cpu sentence-transformers
+# !pip install -q langchain langchain-community faiss-cpu sentence-transformers
 
 import json
 from langchain.schema import Document
@@ -23,17 +23,21 @@ embeddings = HuggingFaceEmbeddings(model_name=model_name)
 print(f"Đang đọc dữ liệu từ file: {JSONL_FILE_PATH}")
 documents = []
 
-with open(JSONL_FILE_PATH, 'r', encoding='utf-8') as f:
+with open(JSONL_FILE_PATH, "r", encoding="utf-8") as f:
     for line in f:
         product = json.loads(line)
 
         # Lấy các giá trị ra biến để dễ đọc và xử lý
-        category = product.get('category', 'chưa rõ')
-        indications = product.get('indications', 'chưa rõ công dụng')
-        product_name = product.get('product_name', '')
-        active_ingredient = product.get('active_ingredient', '').replace('Thông tin thành phần Hàm lượng', '').strip()
-        usage_instructions = product.get('usage_instructions', '')
-        
+        category = product.get("category", "chưa rõ")
+        indications = product.get("indications", "chưa rõ công dụng")
+        product_name = product.get("product_name", "")
+        active_ingredient = (
+            product.get("active_ingredient", "")
+            .replace("Thông tin thành phần Hàm lượng", "")
+            .strip()
+        )
+        usage_instructions = product.get("usage_instructions", "")
+
         # 1. Tạo page_content tối ưu
         # Nguyên tắc: Công dụng lên đầu, phân loại rõ ràng, và dùng câu văn tự nhiên.
         page_content = f"""
@@ -43,7 +47,7 @@ with open(JSONL_FILE_PATH, 'r', encoding='utf-8') as f:
         Đối tượng và cách sử dụng: {usage_instructions}.
         Thành phần chính bao gồm: {active_ingredient}.
         """.strip()
-        
+
         # 2. Tạo metadata
         # Nguyên tắc: Chứa các dữ liệu có cấu trúc để hiển thị hoặc lọc.
         metadata = {
@@ -56,8 +60,8 @@ with open(JSONL_FILE_PATH, 'r', encoding='utf-8') as f:
             "packaging": product.get("packaging"),
             "form": product.get("form"),
             "manufacturer": product.get("manufacturer"),
-            "brand_origin": product.get("brand_origin")
-        }        
+            "brand_origin": product.get("brand_origin"),
+        }
         doc = Document(page_content=page_content, metadata=metadata)
         documents.append(doc)
 
@@ -69,7 +73,8 @@ print(f"Đã chia {len(documents)} tài liệu thành {len(split_docs)} đoạn 
 
 
 # --- 5. VECTOR HÓA VÀ LƯU TRỮ (PHIÊN BẢN ĐƠN GIẢN VÀ HIỆU QUẢ) ---
-import time # Import time ở đây để đo thời gian
+import time  # Import time ở đây để đo thời gian
+
 print("Bắt đầu vector hóa toàn bộ dữ liệu (không cần chia lô)...")
 start_time = time.time()
 

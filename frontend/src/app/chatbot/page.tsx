@@ -4,6 +4,8 @@ import { useState, useRef, useEffect } from "react";
 import { Button } from "@/components/ui/button";
 import { Send, Bot, User, Home, Menu, X, Globe, Trash2 } from "lucide-react";
 import { v4 as uuidv4 } from "uuid"; // Cần cài: npm install uuid @types/uuid
+import ReactMarkdown from "react-markdown";
+
 
 // --- TYPES ---
 interface Message {
@@ -97,7 +99,7 @@ export default function ChatbotPage() {
         home: "Trang chủ",
         empty: "Chưa có lịch sử",
       },
-      header: { title: "Trợ Lý Y Tế Thông Minh", status: "● Đang hoạt động" },
+      header: { title: "Trợ Lý Y Tế Thông Minh", status: "Đang hoạt động" },
       quickQuestions: {
         label: "Câu hỏi gợi ý:",
         items: [
@@ -250,9 +252,10 @@ export default function ChatbotPage() {
       (s) => s.id === currentThreadId
     );
     if (
-      currentSessionIndex !== -1 &&
-      sessions[currentSessionIndex].messagesCount === undefined
-    ) {
+  currentSessionIndex !== -1 &&
+  messages.filter((m) => m.type === "user").length === 0
+) {
+
       // Logic đơn giản: Lấy 30 ký tự đầu làm tiêu đề
       const updatedSessions = [...sessions];
       updatedSessions[currentSessionIndex].title =
@@ -492,9 +495,14 @@ export default function ChatbotPage() {
                       : "bg-white border border-gray-200 text-gray-800 rounded-bl-none"
                   }`}
                 >
-                  <p className="whitespace-pre-wrap leading-relaxed text-[15px]">
-                    {message.content}
-                  </p>
+                  <div className="prose prose-sm max-w-none leading-relaxed text-[15px]">
+  {message.type === "bot" ? (
+    <ReactMarkdown>{message.content}</ReactMarkdown>
+  ) : (
+    <p className="whitespace-pre-wrap">{message.content}</p>
+  )}
+</div>
+
                 </div>
                 <span className="text-[10px] text-gray-400 mt-1.5 px-1">
                   {new Date(message.timestamp).toLocaleTimeString(
