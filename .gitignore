@@ -22,4 +22,4 @@ faiss_index.zip
 .DS_Store
 
 # --- DỮ LIỆU ---
-backend/data/*.json 
+backend/data/
