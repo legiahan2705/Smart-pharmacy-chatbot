@@ -37,7 +37,7 @@ app = FastAPI()
 # Cho phép Frontend (localhost:3000) gọi vào Backend
 origins = [
     "http://localhost:3000",
-    "http://127.0.0.1:3000",
+    "http://127.0.0.1:3000", 
 ]
 
 app.add_middleware(
