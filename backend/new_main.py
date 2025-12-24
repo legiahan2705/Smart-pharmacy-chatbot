@@ -15,9 +15,7 @@ from langchain_community.vectorstores import FAISS
 from langchain_core.prompts import PromptTemplate
 from langchain_core.output_parsers import StrOutputParser, JsonOutputParser
 from langgraph.graph import StateGraph, END
-from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.checkpoint.memory import MemorySaver
-
 import pandas as pd
 import re
 
@@ -38,7 +36,9 @@ app.add_middleware(
 # =======================================================
 # 1. XỬ LÝ DỮ LIỆU (DÙNG PARQUET ĐỂ TĂNG TỐC KHỞI ĐỘNG)
 # =======================================================
-def load_and_clean_data() -> pd.DataFrame:
+import gc # Thư viện dọn dẹp rác bộ nhớ
+
+def load_and_clean_data():
     parquet_path = "data/optimized_db.parquet"
     source_json_path = "data/longchau_selected.json"
 
@@ -110,13 +110,7 @@ def load_and_clean_data() -> pd.DataFrame:
         # Trả về DataFrame rỗng để server không bị crash hẳn
         return pd.DataFrame()
 
-_df_cache = None
-
-def get_df_safe() -> pd.DataFrame: # Thêm -> pd.DataFrame để IDE hiểu và hết báo vàng
-    global _df_cache
-    if _df_cache is None: 
-        _df_cache = load_and_clean_data()
-    return _df_cache
+global_df = load_and_clean_data()
 
 # =======================================================
 # 2. MODELS & VECTORSTORE
@@ -124,14 +118,10 @@ def get_df_safe() -> pd.DataFrame: # Thêm -> pd.DataFrame để IDE hiểu và 
 # Dùng Flash để nhanh, temperature thấp để chính xác
 llm = ChatGoogleGenerativeAI(
     model="gemini-2.5-flash", 
-    temperature=0, # Giữ 0 để trả lời chính xác theo tài liệu
-    safety_settings={
-        HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
-        HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
-        HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE,
-        HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_NONE,
-    }
+    temperature=0,
+    safety_settings={HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE} 
 )
+
 print("⏳ Đang tải mô hình Embeddings...")
 embeddings = GoogleGenerativeAIEmbeddings(model="models/text-embedding-004", google_api_key=os.environ.get("GOOGLE_API_KEY"))
 
@@ -148,13 +138,7 @@ def load_vectorstore():
 vectorstore = load_vectorstore()
 if vectorstore:
     # Tăng tốc bằng cách lọc bớt rác ngay từ đầu (score_threshold)
-    # Sửa trong main.py
-    retriever = vectorstore.as_retriever(
-    search_kwargs={
-        "k": 10, 
-        # "score_threshold": 0.3  <-- XÓA HOẶC COMMENT DÒNG NÀY ĐI
-    }
-)
+    retriever = vectorstore.as_retriever(search_kwargs={"k": 15, "score_threshold": 0.4})
 else:
     print("⚠️ Không có Vectorstore!")
 
@@ -189,25 +173,16 @@ Bạn là bộ não trung tâm của hệ thống AI y tế Long Châu. Nhiệm 
 HÃY THỰC HIỆN 3 BƯỚC PHÂN TÍCH SAU:
 
 BƯỚC 1: KIỂM DUYỆT AN TOÀN (SAFETY CHECK)
-Phân tích xem câu hỏi có chứa ý định nguy hiểm không.
-- ĐẶT "is_unsafe": true KHI VÀ CHỈ KHI:
-   + Người dùng có ý định TỰ TỬ, TỰ HẠI rõ ràng (muốn chết, tìm cách chết, hỏi liều gây tử vong).
-   + Hỏi cách ĐẦU ĐỘC người khác.
-   + Hỏi mua thuốc cấm/ma túy.
-
-- ĐẶT "is_unsafe": false (AN TOÀN) KHI:
-   + Người dùng hỏi về "lỡ uống quá liều", "uống nhầm", "quên liều".
-   + Người dùng lo lắng về tác dụng phụ khi uống nhiều (Ví dụ: "Uống 2 viên có sao không?").
-   -> TRƯỜNG HỢP NÀY CẦN TRẢ VỀ false ĐỂ HỆ THỐNG TÌM KIẾM THÔNG TIN TƯ VẤN CÁCH XỬ LÝ.
+Phân tích xem câu hỏi có chứa ý định nguy hiểm không dựa trên các tiêu chí:
+1. Tự tử, tự hại (Self-harm): Muốn chết, tìm cách kết thúc cuộc sống, ngủ mãi mãi.
+2. Đầu độc, Giết người (Violence): Tìm thuốc độc, thuốc không màu không mùi, cách hại người.
+3. Sử dụng sai mục đích nghiêm trọng: Dùng thuốc quá liều để "phê", gây mê.
+-> Nếu vi phạm: Đặt "is_unsafe": true.
 
 BƯỚC 2: ĐỊNH TUYẾN (ROUTING)
 Xác định loại câu hỏi để chọn nguồn dữ liệu:
-- Ưu tiên chọn "structured_analysis" (Pandas) nếu câu hỏi chứa các TIÊU CHÍ LỌC CỤ THỂ:
-   + Hỏi về GIÁ CẢ (rẻ nhất, đắt nhất, bao nhiêu tiền).
-   + Hỏi về DẠNG BÀO CHẾ (dạng gói, dạng viên, siro, thuốc bôi, thuốc nước, hỗn dịch).
-   + Hỏi về XUẤT XỨ (của Mỹ, của Pháp, nước nào sản xuất).
-   + Hỏi về QUY CÁCH (hộp bao nhiêu viên).
-- Chỉ chọn "vector_search" khi hỏi thuần túy về kiến thức: Công dụng là gì? Cách dùng thế nào? Bệnh này uống thuốc gì (không yêu cầu dạng cụ thể)?
+- Nếu hỏi thông tin mô tả, công dụng, cách dùng, tác dụng phụ, thành phần -> Chọn "vector_search".
+- Nếu hỏi GIÁ CẢ (rẻ nhất, đắt nhất), SỐ LƯỢNG (bao nhiêu loại), SO SÁNH giá, hoặc LỌC theo tiêu chí -> Chọn "structured_analysis".
 -> Gán giá trị vào trường "route".
 
 BƯỚC 3: MỞ RỘNG CÂU HỎI (QUERY EXPANSION)
@@ -253,24 +228,14 @@ async def brain_node(state: AppState):
         return {"intent_data": {"is_unsafe": False, "route": "vector_search", "keywords": question}}
 
 # --- NODE 2: RETRIEVE ---
-# --- SỬA LẠI HAM RETRIEVE_NODE ---
 async def retrieve_node(state: AppState):
     print("--- 🔍 RETRIEVE ---")
     query = state["intent_data"].get("keywords", state["question"])
     print(f"Searching: {query}")
-    
     docs = await retriever.ainvoke(query)
     
-    # --- DEBUG LOG QUAN TRỌNG ---
-    if not docs:
-        print("❌ CẢNH BÁO: Không tìm thấy tài liệu nào (Docs rỗng)!")
-        return {"context": ""}
-        
-    print(f"✅ Đã tìm thấy {len(docs)} tài liệu.")
+    # Format docs
     context = "\n\n".join([doc.page_content for doc in docs])
-    print(f"   -> Tổng độ dài Context: {len(context)} ký tự")
-    # ----------------------------
-
     return {"context": context}
 
 # --- NODE 3: PANDAS (Prompt Đầy Đủ Cũ) ---
@@ -289,18 +254,11 @@ Các cột quan trọng cần dùng:
 Nhiệm vụ: Viết MỘT dòng code Python để lọc dữ liệu và trả lời câu hỏi.
 Kết quả phải được gán vào biến `result`.
 
-QUY TẮC LOGIC QUAN TRỌNG:
-1. NGỮ CẢNH (CONTEXT):
-   - Đọc kỹ "Lịch sử trò chuyện". Nếu câu hỏi hiện tại thiếu chủ ngữ (ví dụ: "tìm dạng viên", "loại nào rẻ hơn"), HÃY LẤY TÊN BỆNH HOẶC TÊN THUỐC TỪ LỊCH SỬ ÁP VÀO.
-   - Ví dụ: History nói về "đau dạ dày". User hỏi "tìm dạng viên". -> Code phải tìm thuốc "đau dạ dày" VÀ "dạng viên".
-
-2. Lọc theo "Dạng bào chế":
-   - Nếu hỏi "Dạng gói": Tìm chứa 'Gói' OR 'Bột' OR 'Hỗn dịch' OR 'Gel' OR 'Dung dịch'.
-   - Nếu hỏi "Dạng viên": Tìm chứa 'Viên' OR 'Nang'.
-   
-3. Lọc theo "Bệnh/Công dụng": Tìm trong CẢ 3 CỘT: `Danh mục` OR `Tên thuốc` OR `Công dụng`.
-4. Luôn thêm điều kiện `df['price_int'] > 0`.
-5. KẾT QUẢ: Luôn hiển thị cột `Tên thuốc`, `Giá bán`, `Dạng bào chế`.
+QUY TẮC QUAN TRỌNG:
+1. Khi tìm "Rẻ nhất" (nsmallest), PHẢI loại bỏ giá bằng 0: `df[df['price_int'] > 0]`.
+2. Khi tìm theo "Xuất xứ" (Ví dụ: Thuốc Mỹ), hãy tìm trong CẢ 2 CỘT: `Xuất xứ thương hiệu` HOẶC `Nước sản xuất`.
+3. Khi tìm theo tên bệnh/triệu chứng (Ví dụ: đau đầu, bổ não), PHẢI tìm trong CẢ 3 CỘT: `Danh mục` HOẶC `Tên thuốc` HOẶC `Công dụng`.
+4. Luôn hiển thị cột `Quy cách` trong kết quả.
 
 Ví dụ 1:
 Question: Tìm 3 loại thuốc Omega 3 rẻ nhất.
@@ -314,20 +272,6 @@ Ví dụ 3:
 Question: Liệt kê các thuốc dạng Siro giá dưới 50000.
 Python: result = df[(df['Dạng bào chế'].str.contains('Siro', case=False, na=False)) & (df['price_int'] > 0) & (df['price_int'] < 50000)][['Tên thuốc', 'Giá bán', 'Quy cách']].to_string()
 
-QUY TẮC LOGIC QUAN TRỌNG:
-1. NGỮ CẢNH (CONTEXT):
-   - Đọc kỹ "Lịch sử trò chuyện". Nếu câu hỏi hiện tại thiếu chủ ngữ (ví dụ: "tìm dạng viên", "loại nào rẻ hơn"), HÃY LẤY TÊN BỆNH HOẶC TÊN THUỐC TỪ LỊCH SỬ ÁP VÀO.
-   - Ví dụ: History nói về "đau dạ dày". User hỏi "tìm dạng viên". -> Code phải tìm thuốc "đau dạ dày" VÀ "dạng viên".
-
-2. Lọc theo "Dạng bào chế":
-   - Nếu hỏi "Dạng gói": Tìm chứa 'Gói' OR 'Bột' OR 'Hỗn dịch' OR 'Gel' OR 'Dung dịch'.
-   - Nếu hỏi "Dạng viên": Tìm chứa 'Viên' OR 'Nang'.
-   
-3. Lọc theo "Bệnh/Công dụng": Tìm trong CẢ 3 CỘT: `Danh mục` OR `Tên thuốc` OR `Công dụng`.
-4. Luôn thêm điều kiện `df['price_int'] > 0`.
-5. KẾT QUẢ: Luôn hiển thị cột `Tên thuốc`, `Giá bán`, `Dạng bào chế`.
-
-Lịch sử trò chuyện: {chat_history}
 Question: {question}
 Python:
 """
@@ -336,28 +280,20 @@ pandas_chain = PromptTemplate.from_template(pandas_prompt_template) | llm | StrO
 async def structured_analysis_node(state: AppState):
     print("--- 🐼 PANDAS ANALYSIS ---")
     question = state["question"]
-    # 1. Lấy lịch sử chat để Pandas hiểu ngữ cảnh
-    history = "\n".join(state.get("chat_history", [])[-4:]) # Lấy 4 câu gần nhất
-    df = get_df_safe()
-    
-    # 2. Truyền thêm chat_history vào invoke
-    code = await pandas_chain.ainvoke({
-        "question": question, 
-        "chat_history": history # <--- QUAN TRỌNG: Truyền history vào đây
-    })
-    
+    code = await pandas_chain.ainvoke({"question": question})
     clean_code = code.replace("```python", "").replace("```", "").strip()
-    print(f"Generated Code: {clean_code}") # In ra để debug xem nó có lọc đúng 'dạ dày' không
-
-    local_vars = {"df": df, "result": None}
+    
+    local_vars = {"df": global_df, "result": None}
     try:
         exec(clean_code, {}, local_vars)
         result = local_vars["result"]
-        final = result.to_string() if hasattr(result, 'to_string') else str(result)
-        final_answer = f"Số liệu tìm được:\n{final}"
+        # Convert result to string safely
+        if hasattr(result, 'to_string'): final = result.to_string()
+        else: final = str(result)
+        final_answer = f"Dựa trên số liệu phân tích được:\n{final}"
     except Exception as e:
-        final_answer = f"Lỗi tính toán: {e}"
-        
+        final_answer = f"Xin lỗi, tôi gặp lỗi khi tính toán số liệu: {str(e)}"
+    
     return {"answer": final_answer}
 
 # --- NODE 4: GENERATE (Prompt Đầy Đủ Cũ) ---
@@ -386,25 +322,19 @@ async def generate_node(state: AppState):
     print("--- ✍️ GENERATE ---")
     question = state["question"]
     context = state.get("context", "")
+    history = "\n".join(state.get("chat_history", []))
     
-    # Nếu không có context thì báo ngay
-    if not context:
-        print("⚠️ Context rỗng, bỏ qua bước gọi LLM.")
-        answer = "Xin lỗi, tôi không tìm thấy thông tin về loại thuốc này trong cơ sở dữ liệu."
-    else:
-        history = "\n".join(state.get("chat_history", []))
-        try:
-            answer = await rag_generation_chain.ainvoke({
-                "question": question, 
-                "context": context, 
-                "chat_history": history
-            })
-            # DEBUG: In câu trả lời ra terminal xem nó có bị rỗng không
-            print(f"🤖 AI Answer: {answer}") 
-        except Exception as e:
-            print(f"Error Generate: {e}")
-            answer = "Xin lỗi, tôi gặp lỗi khi tạo câu trả lời."
+    try:
+        answer = await rag_generation_chain.ainvoke({
+            "question": question, 
+            "context": context, 
+            "chat_history": history
+        })
+    except Exception as e:
+        print(f"Error: {e}")
+        answer = "Xin lỗi, tôi không thể trả lời câu hỏi này lúc này."
     
+    # Cập nhật lịch sử
     new_history = state.get("chat_history", []) + [f"User: {question}", f"AI: {answer}"]
     return {"answer": answer, "chat_history": new_history}
 
