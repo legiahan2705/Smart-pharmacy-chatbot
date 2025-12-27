@@ -121,9 +121,8 @@ export default function ChatbotPage() {
         label: "Câu hỏi gợi ý:",
         items: [
           "Thuốc paracetamol dùng như thế nào?",
-          "Triệu chứng cảm cúm thông thường",
-          "Cách phòng ngừa cảm lạnh",
           "Thuốc hạ sốt cho trẻ em",
+          
         ],
       },
       input: {
