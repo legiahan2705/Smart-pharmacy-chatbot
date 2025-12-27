@@ -1,6 +1,10 @@
 import os
 import json
 import gc
+import requests
+import base64
+import io         
+import edge_tts   # <--- Sửa lỗi vàng cho TTS
 from dotenv import load_dotenv
 from typing import TypedDict, Literal
 
@@ -8,6 +12,10 @@ from typing import TypedDict, Literal
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel 
+from fastapi import FastAPI, UploadFile, File 
+from fastapi.responses import StreamingResponse 
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
 
 # --- LangChain Imports ---
 from langchain_google_genai import ChatGoogleGenerativeAI, GoogleGenerativeAIEmbeddings, HarmBlockThreshold, HarmCategory
@@ -493,3 +501,179 @@ async def chat_handler(request: ChatRequest):
         final_answer = result.get("answer", "Lỗi: Không có câu trả lời.")
     
     return {"answer": final_answer}
+
+# =======================================================
+# 6. AUDIO ENDPOINTS 
+# =======================================================
+
+# --- A. Text-to-Speech (TTS) - Dùng Edge-TTS (Miễn phí, Giọng hay) ---
+@app.post("/tts")
+async def text_to_speech(request: ChatRequest):
+    """
+    Nhận text -> Trả về file âm thanh MP3 (Streaming)
+    """
+    text = request.question # Lấy đoạn văn bản cần đọc
+    voice = "vi-VN-HoaiMyNeural" # Giọng nữ miền Bắc cực chuẩn
+    # voice = "vi-VN-NamMinhNeural" # Giọng nam (nếu thích)
+
+    # Tạo giao tiếp với Edge TTS
+    communicate = edge_tts.Communicate(text, voice)
+    
+    # Tạo bộ nhớ đệm để chứa âm thanh (không cần lưu file rác vào ổ cứng)
+    audio_stream = io.BytesIO()
+    
+    # Ghi dữ liệu vào stream
+    async for chunk in communicate.stream():
+        if chunk["type"] == "audio":
+            audio_stream.write(chunk["data"])
+    
+    audio_stream.seek(0) # Tua lại đầu băng
+    
+    # Trả về dạng stream để Frontend phát được ngay
+    return StreamingResponse(audio_stream, media_type="audio/mpeg")
+
+# --- B. Speech-to-Text (STT) - Dùng Gemini qua REST API (Không xung đột) ---
+@app.post("/stt")
+async def speech_to_text(file: UploadFile = File(...)):
+    """
+    Nhận file âm thanh -> Gửi trực tiếp qua HTTP Request tới Gemini
+    """
+    # 1. Đọc dữ liệu file
+    file_bytes = await file.read()
+    
+    # 2. Mã hóa sang Base64 (Để gửi qua mạng)
+    base64_audio = base64.b64encode(file_bytes).decode('utf-8')
+    
+    # 3. Xác định Mime Type (Mp3, Wav, Webm...)
+    mime_type = "audio/mp3" # Mặc định
+    if file.filename.endswith(".wav"): mime_type = "audio/wav"
+    elif file.filename.endswith(".webm"): mime_type = "audio/webm"
+    
+    # 4. Cấu hình Key & URL
+    api_key = os.environ.get("GOOGLE_API_KEY")
+    if not api_key:
+        return {"text": "Lỗi: Chưa cấu hình GOOGLE_API_KEY"}
+        
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={api_key}"
+    
+    # 5. Tạo Payload (Gói tin gửi đi)
+    payload = {
+        "contents": [{
+            "parts": [
+                {"text": "Hãy nghe đoạn âm thanh này và chép lại nguyên văn nội dung bằng tiếng Việt. Chỉ trả về nội dung văn bản, không thêm lời dẫn."},
+                {
+                    "inline_data": {
+                        "mime_type": mime_type,
+                        "data": base64_audio
+                    }
+                }
+            ]
+        }]
+    }
+
+    try:
+        # 6. Gửi Request
+        print("📤 Đang gửi Inline Audio tới Gemini (REST API)...")
+        response = requests.post(url, json=payload, headers={"Content-Type": "application/json"})
+        
+        # 7. Xử lý kết quả
+        if response.status_code == 200:
+            result_json = response.json()
+            try:
+                text_result = result_json["candidates"][0]["content"]["parts"][0]["text"].strip()
+                print(f"🎙️ Gemini nghe được: {text_result}")
+                return {"text": text_result}
+            except KeyError:
+                print(f"❌ Gemini không trả về text. Response: {result_json}")
+                return {"text": ""}
+        else:
+            print(f"❌ Lỗi API ({response.status_code}): {response.text}")
+            return {"text": ""}
+
+    except Exception as e:
+        print(f"❌ Lỗi kết nối STT: {e}")
+        return {"text": ""}
+    
+# =======================================================
+# 7. UNIFIED ENDPOINT (ALL-IN-ONE)
+# =======================================================
+@app.post("/chat-voice-flow")
+async def chat_voice_flow(
+    file: UploadFile = File(...), 
+    thread_id: str = "default_user"
+):
+    """
+    Quy trình Full: Nhận Audio -> STT -> Agent xử lý -> TTS -> Trả về JSON (Text + Audio Base64)
+    """
+    print(f"🎤 Nhận yêu cầu Voice Chat từ user: {thread_id}")
+
+    # --- BƯỚC 1: STT (Speech to Text) ---
+    # Tái sử dụng logic gọi Gemini API
+    file_bytes = await file.read()
+    base64_audio = base64.b64encode(file_bytes).decode('utf-8')
+    
+    # Xác định loại file
+    mime_type = "audio/mp3"
+    if file.filename.endswith(".wav"): mime_type = "audio/wav"
+    elif file.filename.endswith(".webm"): mime_type = "audio/webm"
+
+    api_key = os.environ.get("GOOGLE_API_KEY")
+    stt_url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={api_key}"
+    
+    stt_payload = {
+        "contents": [{
+            "parts": [
+                {"text": "Hãy nghe đoạn âm thanh này và chép lại nguyên văn nội dung bằng tiếng Việt. Chỉ trả về nội dung văn bản, không thêm lời dẫn."},
+                {"inline_data": {"mime_type": mime_type, "data": base64_audio}}
+            ]
+        }]
+    }
+
+    user_text = ""
+    try:
+        resp = requests.post(stt_url, json=stt_payload, headers={"Content-Type": "application/json"})
+        if resp.status_code == 200:
+            user_text = resp.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
+            print(f"   -> Nghe được: {user_text}")
+        else:
+            print(f"   -> Lỗi STT: {resp.text}")
+            return {"error": "Không nghe rõ giọng nói"}
+    except Exception as e:
+        return {"error": f"Lỗi kết nối STT: {str(e)}"}
+
+    if not user_text:
+        return {"answer": "Tôi không nghe thấy gì cả.", "audio_base64": None}
+
+    # --- BƯỚC 2: AGENT THINKING (LangGraph) ---
+    print(f"   -> Agent đang suy nghĩ...")
+    config = {"configurable": {"thread_id": thread_id}}
+    result = await rag_agent.ainvoke({"question": user_text}, config=config)
+    
+    # Xử lý Safety
+    intent = result.get("intent_data", {})
+    if intent.get("is_unsafe"):
+        bot_answer = EMPATHETIC_SAFETY_MESSAGE
+    else:
+        bot_answer = result.get("answer", "Xin lỗi, tôi gặp lỗi khi xử lý thông tin.")
+    
+    print(f"   -> Bot trả lời: {bot_answer}")
+
+    # --- BƯỚC 3: TTS (Text to Speech) ---
+    print(f"   -> Đang chuyển văn bản sang giọng nói...")
+    communicate = edge_tts.Communicate(bot_answer, "vi-VN-HoaiMyNeural")
+    
+    # Ghi audio vào bộ nhớ đệm
+    audio_stream = io.BytesIO()
+    async for chunk in communicate.stream():
+        if chunk["type"] == "audio":
+            audio_stream.write(chunk["data"])
+    
+    # Chuyển audio thành Base64 để gửi kèm JSON
+    audio_base64 = base64.b64encode(audio_stream.getvalue()).decode('utf-8')
+
+    # --- KẾT QUẢ TRẢ VỀ ---
+    return {
+        "user_text": user_text,   # Để hiện lên màn hình chat phía user
+        "bot_answer": bot_answer, # Để hiện câu trả lời chữ
+        "audio_base64": audio_base64 # Để Frontend phát âm thanh
+    }

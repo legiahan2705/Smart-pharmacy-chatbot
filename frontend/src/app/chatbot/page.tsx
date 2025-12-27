@@ -2,10 +2,21 @@
 
 import { useState, useRef, useEffect } from "react";
 import { Button } from "@/components/ui/button";
-import { Send, Bot, User, Home, Menu, X, Globe, Trash2 } from "lucide-react";
+import {
+  Send,
+  Bot,
+  User,
+  Home,
+  Menu,
+  X,
+  Globe,
+  Trash2,
+  Mic,
+  Square,
+  Loader2,
+} from "lucide-react";
 import { v4 as uuidv4 } from "uuid"; // Cần cài: npm install uuid @types/uuid
 import ReactMarkdown from "react-markdown";
-
 
 // --- TYPES ---
 interface Message {
@@ -64,6 +75,12 @@ export default function ChatbotPage() {
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+
+  // --- STATE CHO VOICE CHAT ---
+  const [isRecording, setIsRecording] = useState(false);
+  const [isProcessingVoice, setIsProcessingVoice] = useState(false);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const audioChunksRef = useRef<Blob[]>([]);
 
   // --- TEXT CONTENT (Đa ngôn ngữ) ---
   const content = {
@@ -252,10 +269,9 @@ export default function ChatbotPage() {
       (s) => s.id === currentThreadId
     );
     if (
-  currentSessionIndex !== -1 &&
-  messages.filter((m) => m.type === "user").length === 0
-) {
-
+      currentSessionIndex !== -1 &&
+      messages.filter((m) => m.type === "user").length === 0
+    ) {
       // Logic đơn giản: Lấy 30 ký tự đầu làm tiêu đề
       const updatedSessions = [...sessions];
       updatedSessions[currentSessionIndex].title =
@@ -309,6 +325,129 @@ export default function ChatbotPage() {
     // Cập nhật lại câu chào trong message hiện tại nếu nó là tin nhắn duy nhất
     if (messages.length === 1 && messages[0].id === "welcome") {
       setMessages([getWelcomeMessage(language === "en" ? "vi" : "en")]);
+    }
+  };
+
+  // --- LOGIC VOICE CHAT ---
+
+  // 1. Bắt đầu thu âm
+  const startRecording = async () => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const mediaRecorder = new MediaRecorder(stream);
+      mediaRecorderRef.current = mediaRecorder;
+      audioChunksRef.current = [];
+
+      mediaRecorder.ondataavailable = (event) => {
+        if (event.data.size > 0) audioChunksRef.current.push(event.data);
+      };
+
+      mediaRecorder.onstop = handleStopRecording; // Gắn hàm xử lý khi dừng
+      mediaRecorder.start();
+      setIsRecording(true);
+    } catch (error) {
+      console.error("Lỗi Micro:", error);
+      alert("Không thể truy cập Micro. Vui lòng kiểm tra quyền!");
+    }
+  };
+
+  // 2. Dừng thu âm (User bấm nút dừng)
+  const stopRecording = () => {
+    if (mediaRecorderRef.current && isRecording) {
+      mediaRecorderRef.current.stop();
+      setIsRecording(false);
+      mediaRecorderRef.current.stream
+        .getTracks()
+        .forEach((track) => track.stop());
+    }
+  };
+
+  // 3. Xử lý file âm thanh -> Gửi lên Server -> Nhận Text & Audio
+  const handleStopRecording = async () => {
+    setIsProcessingVoice(true); // Hiển thị loading xoay vòng
+    const currentThreadId = activeThreadId;
+
+    try {
+      // Gom file âm thanh
+      const audioBlob = new Blob(audioChunksRef.current, { type: "audio/mp3" });
+      const audioFile = new File([audioBlob], "voice_input.mp3", {
+        type: "audio/mp3",
+      });
+
+      const formData = new FormData();
+      formData.append("file", audioFile);
+      formData.append("thread_id", currentThreadId);
+
+      // Gọi API Full Flow
+      const apiUrl = process.env.NEXT_PUBLIC_API_URL || "http://127.0.0.1:8000";
+      const response = await fetch(`${apiUrl}/chat-voice-flow`, {
+        method: "POST",
+        body: formData,
+      });
+
+      if (!response.ok) throw new Error("Lỗi API Voice");
+
+      const data = await response.json();
+
+      // Nếu không nghe được gì
+      if (!data.user_text) return;
+
+      // --- CẬP NHẬT UI & LOCAL STORAGE (Giống logic handleSend) ---
+
+      // A. Tạo tin nhắn User (từ text nhận diện được)
+      const userMessage: Message = {
+        id: Date.now().toString(),
+        type: "user",
+        content: data.user_text,
+        timestamp: new Date(),
+      };
+
+      // B. Tạo tin nhắn Bot
+      const botMessage: Message = {
+        id: (Date.now() + 1).toString(),
+        type: "bot",
+        content: data.bot_answer,
+        timestamp: new Date(),
+      };
+
+      // C. Cập nhật State
+      const newMessages = [...messages, userMessage, botMessage];
+      setMessages(newMessages);
+
+      // D. Lưu LocalStorage
+      localStorage.setItem(
+        `chat_messages_${currentThreadId}`,
+        JSON.stringify(newMessages)
+      );
+
+      // E. Cập nhật tiêu đề Session nếu là tin nhắn đầu
+      if (
+        messages.length === 0 ||
+        (messages.length === 1 && messages[0].id === "welcome")
+      ) {
+        const updatedSessions = sessions.map((s) =>
+          s.id === currentThreadId
+            ? {
+                ...s,
+                title: data.user_text.substring(0, 30) + "...",
+                updatedAt: new Date(),
+              }
+            : s
+        );
+        setSessions(updatedSessions);
+        localStorage.setItem("chat_sessions", JSON.stringify(updatedSessions));
+      }
+
+      // F. PHÁT ÂM THANH TRẢ LỜI
+      if (data.audio_base64) {
+        const audio = new Audio(`data:audio/mp3;base64,${data.audio_base64}`);
+        audio.play().catch((e) => console.error("Lỗi phát audio:", e));
+      }
+    } catch (error) {
+      console.error(error);
+      alert("Có lỗi khi xử lý giọng nói.");
+    } finally {
+      setIsProcessingVoice(false);
     }
   };
 
@@ -496,13 +635,12 @@ export default function ChatbotPage() {
                   }`}
                 >
                   <div className="prose prose-sm max-w-none leading-relaxed text-[15px]">
-  {message.type === "bot" ? (
-    <ReactMarkdown>{message.content}</ReactMarkdown>
-  ) : (
-    <p className="whitespace-pre-wrap">{message.content}</p>
-  )}
-</div>
-
+                    {message.type === "bot" ? (
+                      <ReactMarkdown>{message.content}</ReactMarkdown>
+                    ) : (
+                      <p className="whitespace-pre-wrap">{message.content}</p>
+                    )}
+                  </div>
                 </div>
                 <span className="text-[10px] text-gray-400 mt-1.5 px-1">
                   {new Date(message.timestamp).toLocaleTimeString(
@@ -563,30 +701,63 @@ export default function ChatbotPage() {
 
         {/* Input Area */}
         <div className="bg-white border-t border-gray-200 p-4 md:p-5">
-          <div className="max-w-4xl mx-auto relative">
-            <input
-              ref={inputRef}
-              type="text"
-              value={inputValue}
-              onChange={(e) => setInputValue(e.target.value)}
-              onKeyPress={handleKeyPress}
-              placeholder={t.input.placeholder}
-              className="w-full pl-5 pr-14 py-3.5 rounded-full border border-gray-300 focus:outline-none focus:ring-2 focus:ring-[#072D94]/20 focus:border-[#072D94] shadow-sm text-gray-700 transition-all"
-            />
-            <Button
-              onClick={handleSend}
-              disabled={!inputValue.trim() || isTyping}
-              className="absolute right-2 top-1.5 bottom-1.5 bg-[#001A61] hover:bg-[#072D94] text-white rounded-full w-10 h-10 p-0 flex items-center justify-center disabled:opacity-50 disabled:cursor-not-allowed transition-all shadow-md"
+          <div className="max-w-4xl mx-auto relative flex items-center gap-2">
+            {/* INPUT TEXT */}
+            <div className="relative flex-1">
+              <input
+                ref={inputRef}
+                type="text"
+                value={inputValue}
+                onChange={(e) => setInputValue(e.target.value)}
+                onKeyPress={handleKeyPress}
+                placeholder={
+                  isRecording ? "Đang nghe bạn nói..." : t.input.placeholder
+                }
+                disabled={isRecording || isProcessingVoice} // Khóa khi đang thu âm
+                className={`w-full pl-5 pr-12 py-3.5 rounded-full border focus:outline-none focus:ring-2 transition-all shadow-sm ${
+                  isRecording
+                    ? "border-red-500 bg-red-50 text-red-600 placeholder-red-400 focus:ring-red-200"
+                    : "border-gray-300 focus:ring-[#072D94]/20 focus:border-[#072D94] text-gray-700"
+                }`}
+              />
+
+              {/* Nút Gửi (Text) - Nằm bên trong Input */}
+              <Button
+                onClick={handleSend}
+                disabled={!inputValue.trim() || isTyping || isRecording}
+                className="absolute right-2 top-1.5 bottom-1.5 bg-[#001A61] hover:bg-[#072D94] text-white rounded-full w-10 h-10 p-0 flex items-center justify-center disabled:opacity-50 transition-all shadow-md"
+              >
+                <Send className="w-4 h-4 ml-0.5" />
+              </Button>
+            </div>
+
+            {/* NÚT MICROPHONE (VOICE) - Nằm bên cạnh Input */}
+            <button
+              onClick={isRecording ? stopRecording : startRecording}
+              disabled={isTyping || isProcessingVoice}
+              className={`flex-shrink-0 w-12 h-12 rounded-full flex items-center justify-center shadow-md transition-all duration-300 ${
+                isProcessingVoice
+                  ? "bg-gray-200 cursor-wait"
+                  : isRecording
+                  ? "bg-red-500 hover:bg-red-600 animate-pulse ring-4 ring-red-200"
+                  : "bg-white border border-gray-200 hover:bg-gray-100 text-gray-600 hover:text-[#072D94]"
+              }`}
+              title="Nói chuyện với AI"
             >
-              <Send className="w-4 h-4 ml-0.5" />
-            </Button>
-            <p className="text-[10px] text-gray-400 mt-2 text-center select-none">
-              {t.input.disclaimer}
-            </p>
+              {isProcessingVoice ? (
+                <Loader2 className="w-5 h-5 animate-spin text-gray-500" />
+              ) : isRecording ? (
+                <Square className="w-5 h-5 text-white fill-current" />
+              ) : (
+                <Mic className="w-5 h-5" />
+              )}
+            </button>
           </div>
+          <p className="text-[10px] text-gray-400 mt-2 text-center select-none">
+            {t.input.disclaimer}
+          </p>
         </div>
       </main>
     </div>
   );
 }
-import PharmacyCarousel from "@/components/pharmacy-carousel";

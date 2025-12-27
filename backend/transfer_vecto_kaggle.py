@@ -1,92 +1,151 @@
 # --- 1. CÀI ĐẶT THƯ VIỆN ---
-# !pip install -q langchain langchain-community faiss-cpu sentence-transformers
+!pip install -q langchain langchain-community faiss-cpu langchain-google-genai
 
 import json
+import os
+import time
 from langchain.schema import Document
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import FAISS
-from langchain_community.embeddings import HuggingFaceEmbeddings
+from langchain_google_genai import GoogleGenerativeAIEmbeddings 
+from kaggle_secrets import UserSecretsClient 
 
-print("Bắt đầu quá trình vector hóa dữ liệu...")
+print("🚀 Bắt đầu quá trình vector hóa dữ liệu (FULL DETAIL VERSION)...")
 
 # --- 2. CẤU HÌNH ---
-JSONL_FILE_PATH = "/kaggle/input/longchau-drugs-jsonl/longchau_drugs.jsonl"
-VECTOR_STORE_PATH = "/kaggle/working/faiss_index_longchau"
+# Kiểm tra lại đường dẫn file input của bạn
+JSON_FILE_PATH = "/kaggle/input/data-longchau/longchau_selected.json" 
+VECTOR_STORE_PATH = "/kaggle/working/faiss_index"
 
-# --- 3. KHỞI TẠO MÔ HÌNH EMBEDDING CỦA HUGGINGFACE ---
-print("Đang tải mô hình embedding local. Lần đầu có thể mất vài phút...")
-# Sử dụng GPU sẽ tự động được ưu tiên trên Kaggle nếu có
-model_name = "sentence-transformers/all-MiniLM-L6-v2"
-embeddings = HuggingFaceEmbeddings(model_name=model_name)
+# --- 3. KHỞI TẠO API & MODEL ---
+print("🔑 Đang lấy API Key...")
+try:
+    user_secrets = UserSecretsClient()
+    api_key = user_secrets.get_secret("GOOGLE_API_KEY")
+    os.environ["GOOGLE_API_KEY"] = api_key
+except Exception as e:
+    print("❌ LỖI: Chưa cấu hình Secret 'GOOGLE_API_KEY'.")
+    raise e
 
-# --- 4. ĐỌC VÀ CHUẨN BỊ DỮ LIỆU ---
-print(f"Đang đọc dữ liệu từ file: {JSONL_FILE_PATH}")
+print("⏳ Đang tải mô hình Google Embeddings (text-embedding-004)...")
+embeddings = GoogleGenerativeAIEmbeddings(model="models/text-embedding-004")
+
+# --- 4. ĐỌC DỮ LIỆU & TẠO CONTENT CHI TIẾT ---
+print(f"📂 Đang đọc dữ liệu từ file: {JSON_FILE_PATH}")
 documents = []
 
-with open(JSONL_FILE_PATH, "r", encoding="utf-8") as f:
-    for line in f:
-        product = json.loads(line)
+try:
+    with open(JSON_FILE_PATH, "r", encoding="utf-8") as f:
+        data_array = json.load(f) 
+        
+    print(f"   -> Tìm thấy {len(data_array)} dòng dữ liệu thô.")
+    
+    for product in data_array:
+        try:
+            # 1. Lấy thông tin cơ bản
+            name = product.get("Tên thuốc") or product.get("product_name") or ""
+            if not name: continue 
 
-        # Lấy các giá trị ra biến để dễ đọc và xử lý
-        category = product.get("category", "chưa rõ")
-        indications = product.get("indications", "chưa rõ công dụng")
-        product_name = product.get("product_name", "")
-        active_ingredient = (
-            product.get("active_ingredient", "")
-            .replace("Thông tin thành phần Hàm lượng", "")
-            .strip()
-        )
-        usage_instructions = product.get("usage_instructions", "")
+            # 2. Lấy thông tin chi tiết (Ưu tiên tiếng Việt, fallback sang tiếng Anh)
+            # Hàm get an toàn: lấy value, nếu k có trả về chuỗi rỗng
+            def get_safe(key_vi, key_en):
+                val = product.get(key_vi) or product.get(key_en) or ""
+                return str(val).strip()
 
-        # 1. Tạo page_content tối ưu
-        # Nguyên tắc: Công dụng lên đầu, phân loại rõ ràng, và dùng câu văn tự nhiên.
-        page_content = f"""
-        Sản phẩm này chủ yếu dùng để {indications}.
-        Phân loại chính: {category}. Đây là một sản phẩm thuộc nhóm {category}, không phải là thuốc kháng sinh hay thuốc điều trị các bệnh lý chuyên khoa nặng.
-        Tên đầy đủ của sản phẩm là {product_name}.
-        Đối tượng và cách sử dụng: {usage_instructions}.
-        Thành phần chính bao gồm: {active_ingredient}.
-        """.strip()
+            danh_muc = get_safe("Danh mục", "category")
+            thanh_phan = get_safe("Thành phần", "active_ingredient").replace("Thông tin thành phần Hàm lượng", "")
+            cong_dung = get_safe("Công dụng", "indications")
+            lieu_dung = get_safe("Liều dùng", "usage_instructions")
+            
+            # --- QUAN TRỌNG: CÁC TRƯỜNG "SÂU" MÀ BẠN CẦN ---
+            tac_dung_phu = get_safe("Tác dụng phụ", "side_effects")
+            luu_y = get_safe("Lưu ý", "precautions") # Chứa thông tin về gan, thận
+            chong_chi_dinh = get_safe("Chống chỉ định", "contraindications") # Chứa thông tin về bà bầu, trẻ em
+            bao_quan = get_safe("Bảo quản", "preservation")
+            
+            nha_san_xuat = get_safe("Nhà sản xuất", "manufacturer")
+            nuoc_san_xuat = get_safe("Nước sản xuất", "country_of_origin")
+            xuat_xu = get_safe("Xuất xứ thương hiệu", "brand_origin")
+            dang_bao_che = get_safe("Dạng bào chế", "form")
+            quy_cach = get_safe("Quy cách", "packaging")
 
-        # 2. Tạo metadata
-        # Nguyên tắc: Chứa các dữ liệu có cấu trúc để hiển thị hoặc lọc.
-        metadata = {
-            "product_id": product.get("product_id"),
-            "product_url": product.get("product_url"),
-            "product_name": product.get("product_name"),
-            "image_url": product.get("image_url"),
-            "price_VND": product.get("price_VND"),
-            "unit": product.get("unit"),
-            "packaging": product.get("packaging"),
-            "form": product.get("form"),
-            "manufacturer": product.get("manufacturer"),
-            "brand_origin": product.get("brand_origin"),
-        }
-        doc = Document(page_content=page_content, metadata=metadata)
-        documents.append(doc)
+            # 3. Xây dựng Page Content "Siêu đầy đủ"
+            # AI sẽ đọc đoạn văn bản này để trả lời. Càng chi tiết càng tốt.
+            page_content = f"""
+            Tên sản phẩm: {name}
+            Danh mục: {danh_muc}
+            Dạng bào chế: {dang_bao_che}
+            Quy cách đóng gói: {quy_cach}
+            Xuất xứ: Thương hiệu {xuat_xu}, Sản xuất tại {nuoc_san_xuat} bởi {nha_san_xuat}.
 
-print(f"Đã đọc và xử lý thành công {len(documents)} sản phẩm.")
+            THÀNH PHẦN:
+            {thanh_phan}
 
-text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=100)
+            CÔNG DỤNG & CHỈ ĐỊNH:
+            {cong_dung}
+
+            CÁCH DÙNG & LIỀU DÙNG:
+            {lieu_dung}
+
+            CHỐNG CHỈ ĐỊNH (Không dùng cho):
+            {chong_chi_dinh}
+
+            LƯU Ý & THẬN TRỌNG (Cảnh báo an toàn):
+            {luu_y}
+
+            TÁC DỤNG PHỤ CÓ THỂ GẶP:
+            {tac_dung_phu}
+            
+            BẢO QUẢN:
+            {bao_quan}
+            """.strip()
+
+            # 4. Metadata (Dùng để lọc nếu cần, hoặc hiển thị UI)
+            metadata = {
+                "source": name,
+                "price": str(product.get("Giá bán") or product.get("price_VND") or "0"),
+                "origin": xuat_xu
+            }
+            
+            doc = Document(page_content=page_content, metadata=metadata)
+            documents.append(doc)
+            
+        except Exception as e:
+            continue 
+
+except FileNotFoundError:
+    print(f"❌ KHÔNG TÌM THẤY FILE TẠI: {JSON_FILE_PATH}")
+    exit()
+
+if len(documents) == 0:
+    print("❌ CẢNH BÁO: Không xử lý được sản phẩm nào.")
+    exit()
+
+print(f"✅ Đã chuẩn hóa FULL DATA cho {len(documents)} sản phẩm.")
+
+# Chia nhỏ văn bản
+# Tăng chunk_size lên 1500 vì content bây giờ rất dài
+text_splitter = RecursiveCharacterTextSplitter(chunk_size=1500, chunk_overlap=200)
 split_docs = text_splitter.split_documents(documents)
-print(f"Đã chia {len(documents)} tài liệu thành {len(split_docs)} đoạn nhỏ (chunks).")
+print(f"📦 Đã chia thành {len(split_docs)} chunks.")
 
-
-# --- 5. VECTOR HÓA VÀ LƯU TRỮ (PHIÊN BẢN ĐƠN GIẢN VÀ HIỆU QUẢ) ---
-import time  # Import time ở đây để đo thời gian
-
-print("Bắt đầu vector hóa toàn bộ dữ liệu (không cần chia lô)...")
+# --- 5. TẠO VECTOR INDEX ---
+print("⚡ Bắt đầu tạo Vector Index (Google Version)...")
 start_time = time.time()
 
-# Chỉ cần một dòng lệnh duy nhất để xử lý tất cả
-vector_db = FAISS.from_documents(split_docs, embeddings)
-
-# Lưu lại CSDL
-vector_db.save_local(VECTOR_STORE_PATH)
-
-end_time = time.time()
-print("-" * 50)
-print(f"✅ HOÀN TẤT! ✅")
-print(f"Thời gian thực thi: {((end_time - start_time) / 60):.2f} phút")
-print(f"Cơ sở dữ liệu vector đã được lưu thành công vào thư mục: '{VECTOR_STORE_PATH}'")
-print("-" * 50)
+try:
+    vector_db = FAISS.from_documents(split_docs, embeddings)
+    vector_db.save_local(VECTOR_STORE_PATH)
+    
+    end_time = time.time()
+    print("-" * 50)
+    print(f"🎉 THÀNH CÔNG! FAISS Index (Full Detail) đã được tạo.")
+    print(f"⏱️ Thời gian: {((end_time - start_time) / 60):.2f} phút")
+    print("-" * 50)
+    
+    # Nén file lại
+    !zip -r faiss_index.zip {VECTOR_STORE_PATH}
+    print("✅ Đã nén xong: faiss_index.zip. Hãy tải về ngay!")
+    
+except Exception as e:
+    print(f"❌ Lỗi tạo Vector: {e}")
