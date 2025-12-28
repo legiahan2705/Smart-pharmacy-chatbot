@@ -173,7 +173,7 @@ const LearnMore = () => {
             <img
               src="/logo_LongChau.png"
               alt="Long Chau Logo"
-              className="h-15 w-auto"
+              className="h-18 w-auto"
             />
             <h1 className="font-bold text-3xl">
               {language === "en" ? "Long Chau Pharmacy" : "Nhà Thuốc Long Châu"}
@@ -187,12 +187,7 @@ const LearnMore = () => {
             >
               {language === "en" ? "Home" : "Trang chủ"}
             </a>
-            <a
-              href="/signin"
-              className="hover:text-[#072D94] hover:bg-white active:scale-90 transition-transform duration-150 font-medium text-[20px] px-2  rounded-lg"
-            >
-              {language === "en" ? "Sign in" : "Đăng nhập"}
-            </a>
+            
             <button
               onClick={toggleLanguage}
               className="flex items-center gap-2 px-4 py-2 bg-[#072D94] text-white rounded-lg hover:bg-[#001A61] transition-colors font-medium"

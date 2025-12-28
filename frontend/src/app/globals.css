@@ -120,3 +120,12 @@
     @apply bg-background text-foreground;
   }
 }
+
+@keyframes wave {
+  0%, 100% { height: 6px }
+  50% { height: 14px }
+}
+
+.animate-wave {
+  animation: wave 1s infinite ease-in-out;
+}

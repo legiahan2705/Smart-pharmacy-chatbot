@@ -2,6 +2,9 @@
   "dependencies": {
     "@langchain/langgraph": "^1.0.1",
     "@nestjs/config": "^4.0.2",
+    "@nestjs/platform-socket.io": "^11.1.10",
+    "@nestjs/websockets": "^11.1.10",
+    "faiss-node": "^0.5.1",
     "lottie-react": "^2.4.1"
   }
 }

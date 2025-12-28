@@ -12,8 +12,8 @@ export default function Home() {
     en: {
       header: {
         title: "Long Chau Pharmacy",
-        home: "Home",
-        signin: "Sign in",
+      
+     
       },
       main: {
         title: "Smart Medicine Assistant",
@@ -26,8 +26,8 @@ export default function Home() {
     vi: {
       header: {
         title: "Nhà Thuốc Long Châu",
-        home: "Trang chủ",
-        signin: "Đăng nhập",
+       
+      
       },
       main: {
         title: "Trợ Lý Y Tế Thông Minh",
@@ -54,24 +54,14 @@ export default function Home() {
             <img
               src="/logo_LongChau.png"
               alt="Long Chau Logo"
-              className="h-15 w-auto"
+              className="h-18 w-auto"
             />
             <h1 className="font-bold text-3xl">{t.header.title}</h1>
           </div>
 
           <nav className="flex gap-8 items-center">
-            <a
-              href="/"
-              className="hover:text-[#072D94] hover:bg-white active:scale-90 transition-transform duration-150 font-medium text-[20px] px-2  rounded-lg"
-            >
-              {t.header.home}
-            </a>
-            <a
-              href="/signin"
-              className="hover:text-[#072D94]  font-medium text-[20px] hover:bg-white px-2 rounded-lg active:scale-90 transition-transform duration-150"
-            >
-              {t.header.signin}
-            </a>
+           
+            
             <button
               onClick={toggleLanguage}
               className="flex items-center gap-2 px-4 py-2 bg-[#072D94] text-white rounded-lg hover:bg-[#001A61] transition-colors font-medium"
