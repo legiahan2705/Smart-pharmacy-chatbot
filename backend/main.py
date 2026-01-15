@@ -6,15 +6,12 @@ import base64
 import io         
 import edge_tts   # <--- Sửa lỗi vàng cho TTS
 from dotenv import load_dotenv
-from typing import TypedDict, Literal
+from typing import TypedDict
 
 # --- FastAPI Imports ---
-from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel 
 from fastapi import FastAPI, UploadFile, File 
 from fastapi.responses import StreamingResponse 
-from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 # --- LangChain Imports ---
