@@ -12,8 +12,6 @@ export default function Home() {
     en: {
       header: {
         title: "Long Chau Pharmacy",
-      
-     
       },
       main: {
         title: "Smart Medicine Assistant",
@@ -26,8 +24,6 @@ export default function Home() {
     vi: {
       header: {
         title: "Nhà Thuốc Long Châu",
-       
-      
       },
       main: {
         title: "Trợ Lý Y Tế Thông Minh",
@@ -60,8 +56,6 @@ export default function Home() {
           </div>
 
           <nav className="flex gap-8 items-center">
-           
-            
             <button
               onClick={toggleLanguage}
               className="flex items-center gap-2 px-4 py-2 bg-[#072D94] text-white rounded-lg hover:bg-[#001A61] transition-colors font-medium"

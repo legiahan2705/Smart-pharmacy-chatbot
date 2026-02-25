@@ -31,28 +31,28 @@ const PharmacyCarousel = ({ language }: { language: "en" | "vi" }) => {
       titleEn: "24/7 Symptom Checker",
       titleVi: "Kiểm tra Triệu chứng 24/7",
       color: "bg-[#DEECFF]",
-      lottieFileName: "Data_Scanning.json" 
+      lottieFileName: "Data_Scanning.json",
     },
     {
       id: 2,
       titleEn: "Medical Technology Applications",
       titleVi: "Ứng dụng Công nghệ Y tế",
       color: "bg-[#DEECFF]",
-      lottieFileName: "Healthcare_Heart_icon_animation.json" 
+      lottieFileName: "Healthcare_Heart_icon_animation.json",
     },
     {
       id: 3,
       titleEn: "Health Technology",
       titleVi: "Công nghệ sức khỏe",
       color: "bg-[#DEECFF]",
-      lottieFileName: "AI_application_in_healthcare.json" 
+      lottieFileName: "AI_application_in_healthcare.json",
     },
     {
       id: 4,
       titleEn: "AI-powered Drug Advice Support",
       titleVi: "Hỗ trợ Tư vấn Thuốc bằng AI",
       color: "bg-[#DEECFF]",
-      lottieFileName: "Chatbot.json" 
+      lottieFileName: "Chatbot.json",
     },
   ];
 
@@ -64,11 +64,15 @@ const PharmacyCarousel = ({ language }: { language: "en" | "vi" }) => {
         try {
           // Fetch từ đường dẫn public
           const res = await fetch(`/${slide.lottieFileName}`);
-          if (!res.ok) throw new Error(`Failed to fetch ${slide.lottieFileName}`);
+          if (!res.ok)
+            throw new Error(`Failed to fetch ${slide.lottieFileName}`);
           const json = await res.json();
           data[slide.lottieFileName] = json;
         } catch (error) {
-          console.error(`Error loading Lottie for ${slide.lottieFileName}:`, error);
+          console.error(
+            `Error loading Lottie for ${slide.lottieFileName}:`,
+            error
+          );
           // Để tránh lỗi crash, nếu file lỗi, ta lưu null
           data[slide.lottieFileName] = null;
         }
@@ -86,14 +90,12 @@ const PharmacyCarousel = ({ language }: { language: "en" | "vi" }) => {
       setCurrentIndex((prev) => (prev + 1) % slides.length);
     }, 3000);
     return () => clearInterval(interval);
-
   }, []); // Chỉ chạy một lần khi component mount
 
   const goToSlide = (index: number) => setCurrentIndex(index);
   const goToPrevious = () =>
     setCurrentIndex((prev) => (prev - 1 + slides.length) % slides.length);
-  const goToNext = () =>
-    setCurrentIndex((prev) => (prev + 1) % slides.length);
+  const goToNext = () => setCurrentIndex((prev) => (prev + 1) % slides.length);
 
   return (
     <div className="w-full mx-auto">
@@ -112,10 +114,9 @@ const PharmacyCarousel = ({ language }: { language: "en" | "vi" }) => {
                   className={`min-w-full h-full flex items-center justify-center relative ${slide.color}`}
                 >
                   <div className="relative z-10 text-center p-8">
-
                     {/* Hiển thị animation Lottie nếu đã tải xong và hợp lệ */}
                     {!isLoading && animationData ? (
-                      <div className="w-63 h-64 mx-auto mb-6"> 
+                      <div className="w-63 h-64 mx-auto mb-6">
                         <Lottie
                           animationData={animationData}
                           loop={true}
@@ -125,7 +126,7 @@ const PharmacyCarousel = ({ language }: { language: "en" | "vi" }) => {
                     ) : (
                       // Hiển thị placeholder hoặc spinner nếu đang tải
                       <div className="w-48 h-48 mx-auto mb-6 flex items-center justify-center text-4xl text-gray-500">
-                        {isLoading ? 'Đang tải...' : 'Lỗi tải animation'}
+                        {isLoading ? "Đang tải..." : "Lỗi tải animation"}
                       </div>
                     )}
 
@@ -159,10 +160,11 @@ const PharmacyCarousel = ({ language }: { language: "en" | "vi" }) => {
             <button
               key={index}
               onClick={() => goToSlide(index)}
-              className={`transition-all rounded-full ${currentIndex === index
-                ? "bg-[#072D94] w-8 h-3"
-                : "bg-[#cad5f3]  hover:bg-white/80 w-3 h-3"
-                }`}
+              className={`transition-all rounded-full ${
+                currentIndex === index
+                  ? "bg-[#072D94] w-8 h-3"
+                  : "bg-[#cad5f3]  hover:bg-white/80 w-3 h-3"
+              }`}
             />
           ))}
         </div>

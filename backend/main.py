@@ -6,12 +6,15 @@ import base64
 import io         
 import edge_tts   # <--- Sửa lỗi vàng cho TTS
 from dotenv import load_dotenv
-from typing import TypedDict
+from typing import TypedDict, Literal
 
 # --- FastAPI Imports ---
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel 
 from fastapi import FastAPI, UploadFile, File 
 from fastapi.responses import StreamingResponse 
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 # --- LangChain Imports ---
@@ -138,7 +141,10 @@ llm = ChatGoogleGenerativeAI(
     }
 )
 print("⏳ Đang tải mô hình Embeddings...")
-embeddings = GoogleGenerativeAIEmbeddings(model="models/text-embedding-004", google_api_key=os.environ.get("GOOGLE_API_KEY"))
+embeddings = GoogleGenerativeAIEmbeddings(
+    model="models/gemini-embedding-001", 
+    google_api_key=os.environ.get("GOOGLE_API_KEY")
+)
 
 def load_vectorstore():
     index_path = "faiss_index"

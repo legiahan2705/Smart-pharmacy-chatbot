@@ -13,7 +13,7 @@ import {
 } from "lucide-react";
 
 const LearnMore = () => {
-  const [language, setLanguage] = useState<"en" | "vi">("en"); 
+  const [language, setLanguage] = useState<"en" | "vi">("en");
 
   const content = {
     en: {
@@ -187,7 +187,7 @@ const LearnMore = () => {
             >
               {language === "en" ? "Home" : "Trang chủ"}
             </a>
-            
+
             <button
               onClick={toggleLanguage}
               className="flex items-center gap-2 px-4 py-2 bg-[#072D94] text-white rounded-lg hover:bg-[#001A61] transition-colors font-medium"
