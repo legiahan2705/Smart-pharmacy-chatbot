@@ -1,11 +1,13 @@
 # --- 1. CÀI ĐẶT THƯ VIỆN ---
-!pip install -q langchain langchain-community faiss-cpu langchain-google-genai
-
+!pip install -qU langchain langchain-core langchain-community langchain-google-genai google-generativeai faiss-cpu langchain-text-splitters
 import json
 import os
+# --- THÊM 2 DÒNG NÀY ĐỂ CHỐNG TREO MÁY TRÊN KAGGLE ---
+os.environ["USE_TF"] = "0"    # Cấm load TensorFlow
+
 import time
-from langchain.schema import Document
-from langchain.text_splitter import RecursiveCharacterTextSplitter
+from langchain_core.documents import Document
+from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import FAISS
 from langchain_google_genai import GoogleGenerativeAIEmbeddings 
 from kaggle_secrets import UserSecretsClient 
@@ -27,8 +29,8 @@ except Exception as e:
     print("❌ LỖI: Chưa cấu hình Secret 'GOOGLE_API_KEY'.")
     raise e
 
-print("⏳ Đang tải mô hình Google Embeddings (text-embedding-004)...")
-embeddings = GoogleGenerativeAIEmbeddings(model="models/text-embedding-004")
+print("⏳ Đang tải mô hình Google Embeddings (gemini-embedding-001)...")
+embeddings = GoogleGenerativeAIEmbeddings(model="models/gemini-embedding-001")
 
 # --- 4. ĐỌC DỮ LIỆU & TẠO CONTENT CHI TIẾT ---
 print(f"📂 Đang đọc dữ liệu từ file: {JSON_FILE_PATH}")
@@ -38,7 +40,13 @@ try:
     with open(JSON_FILE_PATH, "r", encoding="utf-8") as f:
         data_array = json.load(f) 
         
+    # ... (code đọc file json ở Phần 4)
     print(f"   -> Tìm thấy {len(data_array)} dòng dữ liệu thô.")
+    
+    # CHIẾN THUẬT CHIA ĐỂ TRỊ: Chạy đợt 1 (Từ 0 đến 2000)
+    data_array = data_array[2000:4000] 
+    
+    print(f"   -> Đang chạy ĐỢT 2: Xử lý {len(data_array)} sản phẩm.")
     
     for product in data_array:
         try:
@@ -129,23 +137,64 @@ text_splitter = RecursiveCharacterTextSplitter(chunk_size=1500, chunk_overlap=20
 split_docs = text_splitter.split_documents(documents)
 print(f"📦 Đã chia thành {len(split_docs)} chunks.")
 
-# --- 5. TẠO VECTOR INDEX ---
+# --- 5. TẠO VECTOR INDEX (CƠ CHẾ AUTO-RETRY BẤT TỬ) ---
 print("⚡ Bắt đầu tạo Vector Index (Google Version)...")
 start_time = time.time()
 
 try:
-    vector_db = FAISS.from_documents(split_docs, embeddings)
-    vector_db.save_local(VECTOR_STORE_PATH)
+    batch_size = 50
+    vector_db = None
     
-    end_time = time.time()
-    print("-" * 50)
-    print(f"🎉 THÀNH CÔNG! FAISS Index (Full Detail) đã được tạo.")
-    print(f"⏱️ Thời gian: {((end_time - start_time) / 60):.2f} phút")
-    print("-" * 50)
-    
-    # Nén file lại
-    !zip -r faiss_index.zip {VECTOR_STORE_PATH}
-    print("✅ Đã nén xong: faiss_index.zip. Hãy tải về ngay!")
-    
+    total_batches = (len(split_docs) + batch_size - 1) // batch_size
+    print(f"📦 Dữ liệu được chia thành {total_batches} lô để xử lý an toàn.")
+
+    for i in range(0, len(split_docs), batch_size):
+        batch = split_docs[i : i + batch_size]
+        current_batch = (i // batch_size) + 1
+        
+        print(f"   -> Đang nhúng (embedding) lô {current_batch}/{total_batches}...")
+        
+        # --- VÒNG LẶP RETRY: Kẻ thù của lỗi 429 ---
+        max_retries = 5
+        for attempt in range(max_retries):
+            try:
+                if vector_db is None:
+                    vector_db = FAISS.from_documents(batch, embeddings)
+                else:
+                    temp_db = FAISS.from_documents(batch, embeddings)
+                    vector_db.merge_from(temp_db)
+                
+                # NẾU THÀNH CÔNG -> Thoát vòng lặp retry, đi tới lô tiếp theo
+                break 
+                
+            except Exception as e:
+                error_msg = str(e)
+                # BẮT ĐÚNG LỖI 429 QUOTA
+                if "429" in error_msg or "RESOURCE_EXHAUSTED" in error_msg:
+                    print(f"      ⏳ Quá tải (429) ở lô {current_batch}. Đang đợi 60 giây để Google reset Quota... (Lần thử {attempt + 1}/{max_retries})")
+                    time.sleep(60) # Ngủ hẳn 1 phút để hồi máu
+                else:
+                    print(f"      ❌ Lỗi lạ ở lô {current_batch}: {error_msg}")
+                    break # Lỗi khác thì bỏ qua lô này luôn
+        
+        # Ngủ nhẹ 5 giây giữa các lô bình thường để không dồn dập
+        time.sleep(5) 
+        
+    # LƯU FILE CUỐI CÙNG
+    if vector_db is not None:
+        vector_db.save_local(VECTOR_STORE_PATH)
+        
+        end_time = time.time()
+        print("-" * 50)
+        print(f"🎉 THÀNH CÔNG! FAISS Index đã được tạo xong.")
+        print(f"⏱️ Thời gian: {((end_time - start_time) / 60):.2f} phút")
+        print("-" * 50)
+        
+        # Nén file lại
+        !zip -r faiss_index.zip {VECTOR_STORE_PATH}
+        print("✅ Đã nén xong: faiss_index.zip. BẠN CÓ THỂ TẢI VỀ RỒI!")
+    else:
+        print("❌ Thất bại: Không có dữ liệu nào được lưu.")
+        
 except Exception as e:
-    print(f"❌ Lỗi tạo Vector: {e}")
+    print(f"❌ Lỗi hệ thống: {e}")

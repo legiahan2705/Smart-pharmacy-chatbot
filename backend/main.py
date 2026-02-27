@@ -56,58 +56,64 @@ def load_and_clean_data() -> pd.DataFrame:
         try:
             return pd.read_parquet(parquet_path)
         except Exception as e:
-            print(f"⚠️ Cache lỗi ({e}), sẽ xử lý lại từ đầu...")
+            print(f"⚠️ Cache lỗi ({e}), sẽ tự động xóa và xử lý lại từ đầu...")
+            os.remove(parquet_path) # Xóa cache hỏng
 
-    # 2. Xử lý lần đầu (Tối ưu bộ nhớ)
+    # 2. Xử lý lần đầu (Tối ưu bộ nhớ chống tràn RAM)
     print("🐢 [Pandas] Bắt đầu đọc file JSON...")
     try:
-        # Bước A: Đọc file
         with open(source_json_path, 'r', encoding='utf-8') as f:
             data = json.load(f)
         print(f"   -> Đã đọc xong {len(data)} sản phẩm. Đang chuẩn hóa dữ liệu...")
 
-        # Bước B: Xử lý trực tiếp trên biến 'data' (Không tạo bản sao normalized_data)
+        # BƯỚC B: CHỈ TRÍCH XUẤT CÁC CỘT CẦN THIẾT CHO PANDAS
+        cleaned_data = []
         for item in data:
-            # Lấy danh sách key để tránh lỗi runtime khi dictionary thay đổi size
-            keys = list(item.keys()) 
-            for key in keys:
-                if key.startswith("Thành phần"):
-                    item["Thành phần"] = item.pop(key) # Đổi tên key cũ thành mới và xóa key cũ ngay
-                elif key.startswith("Công dụng"):
-                    item["Công dụng"] = item.pop(key)
+            # Hàm quét các key bị đổi tên (Thành phần của..., Công dụng của...)
+            def get_dynamic(prefix):
+                for k, v in item.items():
+                    if str(k).startswith(prefix):
+                        return str(v).strip()
+                return ""
+
+            # Tạo dictionary mới sạch sẽ, KHÔNG rác
+            clean_item = {
+                "Tên thuốc": item.get("Tên thuốc", item.get("product_name", "")),
+                "Giá bán": item.get("Giá bán", item.get("price_VND", "0")),
+                "Danh mục": item.get("Danh mục", item.get("category", "")),
+                "Dạng bào chế": item.get("Dạng bào chế", item.get("form", "")),
+                "Quy cách": item.get("Quy cách", item.get("packaging", "")),
+                "Xuất xứ thương hiệu": item.get("Xuất xứ thương hiệu", item.get("brand_origin", "")),
+                "Nước sản xuất": item.get("Nước sản xuất", item.get("country_of_origin", "")),
+                "Nhà sản xuất": item.get("Nhà sản xuất", item.get("manufacturer", "")),
+                "Thành phần": get_dynamic("Thành phần"),
+                "Công dụng": get_dynamic("Công dụng")
+            }
+            cleaned_data.append(clean_item)
 
         print("   -> Đang chuyển sang DataFrame...")
         
-        # Bước C: Tạo DataFrame và XÓA NGAY biến data để giải phóng RAM
-        df = pd.DataFrame(data)
-        del data # Xóa biến data
-        gc.collect() # Ép buộc dọn dẹp bộ nhớ ngay lập tức
+        # BƯỚC C: Tạo DataFrame từ list đã làm sạch (Bảo đảm không bị nổ cột)
+        df = pd.DataFrame(cleaned_data)
+        
+        # Xóa biến tạm để giải phóng RAM ngay lập tức
+        del data 
+        del cleaned_data
+        gc.collect() 
         
         print("   -> Đang làm sạch cột giá và điền dữ liệu thiếu...")
-        
-        # Bước D: Xử lý cột giá (Dùng vectorized operation nhanh hơn apply)
-        # Chuyển về string trước để tránh lỗi
         df['Giá bán'] = df['Giá bán'].astype(str)
-        # Dùng Regex trích xuất số trực tiếp (nhanh hơn loop)
         df['price_int'] = df['Giá bán'].str.replace(r'[^\d]', '', regex=True)
         df['price_int'] = pd.to_numeric(df['price_int'], errors='coerce').fillna(0).astype(int)
 
-        # Bước E: Điền dữ liệu trống
-        cols_to_fill = ['Nhà sản xuất', 'Nước sản xuất', 'Xuất xứ thương hiệu', 'Danh mục', 'Dạng bào chế', 'Quy cách', 'Thành phần', 'Lưu ý', 'Bảo quản', 'Công dụng', 'Đơn vị']
+        df = df.fillna('')
         
-        # Chỉ điền những cột thực sự tồn tại trong df
-        existing_cols = [c for c in cols_to_fill if c in df.columns]
-        df[existing_cols] = df[existing_cols].fillna('')
-        
-        # Bước F: Chuyển đổi kiểu dữ liệu để lưu Parquet an toàn
         print("   -> Đang lưu Cache Parquet (Bước cuối)...")
-        
         # Chuyển tất cả về string (trừ price_int) để tránh lỗi format của Parquet
         for col in df.columns:
             if col != 'price_int':
                 df[col] = df[col].astype(str)
         
-        # Lưu file
         df.to_parquet(parquet_path, index=False)
         print(f"✅ [Pandas] Xử lý xong và đã lưu Cache vào {parquet_path}.")
         
@@ -115,7 +121,6 @@ def load_and_clean_data() -> pd.DataFrame:
 
     except Exception as e:
         print(f"❌ LỖI NGHIÊM TRỌNG KHI XỬ LÝ DATA: {e}")
-        # Trả về DataFrame rỗng để server không bị crash hẳn
         return pd.DataFrame()
 
 _df_cache = None
