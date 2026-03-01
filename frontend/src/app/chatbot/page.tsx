@@ -60,7 +60,7 @@ export default function ChatbotPage() {
   const [isRecording, setIsRecording] = useState(false);
   const [isBotSpeaking, setIsBotSpeaking] = useState(false);
   const [speakingMessageId, setSpeakingMessageId] = useState<string | null>(
-    null
+    null,
   );
   const [loadingAudioId, setLoadingAudioId] = useState<string | null>(null);
 
@@ -199,7 +199,7 @@ export default function ChatbotPage() {
     setInputValue("");
     setIsTyping(true);
     setTypingStatus(
-      t.typingStatuses[Math.floor(Math.random() * t.typingStatuses.length)]
+      t.typingStatuses[Math.floor(Math.random() * t.typingStatuses.length)],
     );
 
     try {
@@ -226,15 +226,15 @@ export default function ChatbotPage() {
         displayed += word + " ";
         setMessages((prev) =>
           prev.map((m) =>
-            m.id === botMsgId ? { ...m, content: displayed } : m
-          )
+            m.id === botMsgId ? { ...m, content: displayed } : m,
+          ),
         );
         await new Promise((r) => setTimeout(r, 20));
       }
 
       if (!abortControllerRef.current) {
         const savedMsgs = JSON.parse(
-          localStorage.getItem(`chat_messages_${currentThreadId}`) || "[]"
+          localStorage.getItem(`chat_messages_${currentThreadId}`) || "[]",
         );
         localStorage.setItem(
           `chat_messages_${currentThreadId}`,
@@ -242,7 +242,7 @@ export default function ChatbotPage() {
             ...savedMsgs,
             userMsg,
             { ...botMsg, content: botAnswer },
-          ])
+          ]),
         );
       }
     } finally {
@@ -325,7 +325,14 @@ export default function ChatbotPage() {
   const createNewSession = () => {
     const id = uuidv4();
     const sess = { id, title: "Hội thoại mới", updatedAt: new Date() };
-    setSessions((prev) => [sess, ...prev]);
+
+    // SỬA Ở ĐÂY: Lưu danh sách session vào State VÀ cả LocalStorage
+    setSessions((prev) => {
+      const updatedSessions = [sess, ...prev];
+      localStorage.setItem("chat_sessions", JSON.stringify(updatedSessions));
+      return updatedSessions;
+    });
+
     setActiveThreadId(id);
     setMessages([
       {
@@ -345,7 +352,7 @@ export default function ChatbotPage() {
         JSON.parse(saved).map((m: any) => ({
           ...m,
           timestamp: new Date(m.timestamp),
-        }))
+        })),
       );
     else
       setMessages([
@@ -609,8 +616,8 @@ export default function ChatbotPage() {
                   isRecording
                     ? "bg-red-500 text-white animate-pulse"
                     : isTyping
-                    ? "bg-slate-100 text-slate-300 cursor-not-allowed"
-                    : "bg-white text-[#072D94] border border-slate-200 hover:bg-slate-50"
+                      ? "bg-slate-100 text-slate-300 cursor-not-allowed"
+                      : "bg-white text-[#072D94] border border-slate-200 hover:bg-slate-50"
                 }`}
               >
                 {isRecording ? (

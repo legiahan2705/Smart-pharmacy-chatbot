@@ -21,13 +21,17 @@ VECTOR_STORE_PATH = "/kaggle/working/faiss_index"
 
 # --- 3. KHỞI TẠO API & MODEL ---
 print("🔑 Đang lấy API Key...")
-try:
-    user_secrets = UserSecretsClient()
-    api_key = user_secrets.get_secret("GOOGLE_API_KEY")
-    os.environ["GOOGLE_API_KEY"] = api_key
-except Exception as e:
-    print("❌ LỖI: Chưa cấu hình Secret 'GOOGLE_API_KEY'.")
-    raise e
+# try:
+#     user_secrets = UserSecretsClient()
+#     api_key = user_secrets.get_secret("GOOGLE_API_KEY")
+#     os.environ["GOOGLE_API_KEY"] = api_key
+# except Exception as e:
+#     print("❌ LỖI: Chưa cấu hình Secret 'GOOGLE_API_KEY'.")
+#     raise e
+
+# DÁN TRỰC TIẾP API KEY MỚI VÀO ĐÂY (Nằm trong ngoặc kép)
+api_key = "AIzaSyDWKVqSdeqExPxdNP5Ag67hBhUXYWgMS3g" 
+os.environ["GOOGLE_API_KEY"] = api_key
 
 print("⏳ Đang tải mô hình Google Embeddings (gemini-embedding-001)...")
 embeddings = GoogleGenerativeAIEmbeddings(model="models/gemini-embedding-001")
@@ -43,10 +47,10 @@ try:
     # ... (code đọc file json ở Phần 4)
     print(f"   -> Tìm thấy {len(data_array)} dòng dữ liệu thô.")
     
-    # CHIẾN THUẬT CHIA ĐỂ TRỊ: Chạy đợt 1 (Từ 0 đến 2000)
-    data_array = data_array[2000:4000] 
+    # CHIẾN THUẬT CHIA ĐỂ TRỊ: Chạy đợt 1 (Từ 501 đến 1000)
+    data_array = data_array[0:500] 
     
-    print(f"   -> Đang chạy ĐỢT 2: Xử lý {len(data_array)} sản phẩm.")
+    print(f"   -> Đang chạy ĐỢT 1: Xử lý {len(data_array)} sản phẩm.")
     
     for product in data_array:
         try:
@@ -56,26 +60,38 @@ try:
 
             # 2. Lấy thông tin chi tiết (Ưu tiên tiếng Việt, fallback sang tiếng Anh)
             # Hàm get an toàn: lấy value, nếu k có trả về chuỗi rỗng
-            def get_safe(key_vi, key_en):
-                val = product.get(key_vi) or product.get(key_en) or ""
-                return str(val).strip()
+            # --- CODE MỚI: QUÉT KEY THÔNG MINH ---
+            # Hàm tìm value dựa trên từ khóa bắt đầu (startswith)
+            def get_dynamic_key(item_dict, prefix):
+                for k, v in item_dict.items():
+                    if str(k).startswith(prefix):
+                        return str(v).strip()
+                return ""
 
-            danh_muc = get_safe("Danh mục", "category")
-            thanh_phan = get_safe("Thành phần", "active_ingredient").replace("Thông tin thành phần Hàm lượng", "")
-            cong_dung = get_safe("Công dụng", "indications")
-            lieu_dung = get_safe("Liều dùng", "usage_instructions")
+            # Dùng hàm mới để quét các key hay bị đổi tên
+            danh_muc = product.get("Danh mục") or product.get("category") or ""
             
-            # --- QUAN TRỌNG: CÁC TRƯỜNG "SÂU" MÀ BẠN CẦN ---
-            tac_dung_phu = get_safe("Tác dụng phụ", "side_effects")
-            luu_y = get_safe("Lưu ý", "precautions") # Chứa thông tin về gan, thận
-            chong_chi_dinh = get_safe("Chống chỉ định", "contraindications") # Chứa thông tin về bà bầu, trẻ em
-            bao_quan = get_safe("Bảo quản", "preservation")
+            # Quét "Thành phần của..."
+            thanh_phan = get_dynamic_key(product, "Thành phần").replace("Thông tin thành phần Hàm lượng", "")
             
-            nha_san_xuat = get_safe("Nhà sản xuất", "manufacturer")
-            nuoc_san_xuat = get_safe("Nước sản xuất", "country_of_origin")
-            xuat_xu = get_safe("Xuất xứ thương hiệu", "brand_origin")
-            dang_bao_che = get_safe("Dạng bào chế", "form")
-            quy_cach = get_safe("Quy cách", "packaging")
+            # Quét "Công dụng của..."
+            cong_dung = get_dynamic_key(product, "Công dụng")
+            
+            # Quét "Cách dùng..." hoặc "Liều dùng..."
+            lieu_dung = get_dynamic_key(product, "Cách dùng") or get_dynamic_key(product, "Liều dùng")
+            
+            # Các key cố định thì dùng .get() bình thường
+            tac_dung_phu = product.get("Tác dụng phụ", "")
+            luu_y = product.get("Lưu ý", "")
+            chong_chi_dinh = product.get("Chống chỉ định", "")
+            bao_quan = product.get("Bảo quản", "")
+            
+            nha_san_xuat = product.get("Nhà sản xuất", "")
+            nuoc_san_xuat = product.get("Nước sản xuất", "")
+            xuat_xu = product.get("Xuất xứ thương hiệu", "")
+            dang_bao_che = product.get("Dạng bào chế", "")
+            quy_cach = product.get("Quy cách", "")
+            # -------------------------------------
 
             # 3. Xây dựng Page Content "Siêu đầy đủ"
             # AI sẽ đọc đoạn văn bản này để trả lời. Càng chi tiết càng tốt.
@@ -155,6 +171,7 @@ try:
         print(f"   -> Đang nhúng (embedding) lô {current_batch}/{total_batches}...")
         
         # --- VÒNG LẶP RETRY: Kẻ thù của lỗi 429 ---
+        # --- VÒNG LẶP RETRY: Kẻ thù của lỗi 429 ---
         max_retries = 5
         for attempt in range(max_retries):
             try:
@@ -169,13 +186,22 @@ try:
                 
             except Exception as e:
                 error_msg = str(e)
-                # BẮT ĐÚNG LỖI 429 QUOTA
                 if "429" in error_msg or "RESOURCE_EXHAUSTED" in error_msg:
-                    print(f"      ⏳ Quá tải (429) ở lô {current_batch}. Đang đợi 60 giây để Google reset Quota... (Lần thử {attempt + 1}/{max_retries})")
-                    time.sleep(60) # Ngủ hẳn 1 phút để hồi máu
+                    print(f"      ⏳ Quá tải (429) ở lô {current_batch}... (Lần {attempt + 1}/{max_retries})")
+                    
+                    # NẾU THỬ 5 LẦN VẪN CHẾT -> HẾT QUOTA NGÀY -> CỨU DỮ LIỆU & DỪNG HẲN
+                    if attempt == max_retries - 1:
+                        print("🚨 BÁO ĐỘNG ĐỎ: HẾT QUOTA NGÀY! DỪNG TOÀN BỘ CHƯƠNG TRÌNH!")
+                        if vector_db is not None:
+                            vector_db.save_local(VECTOR_STORE_PATH)
+                            !zip -r faiss_index_partial.zip {VECTOR_STORE_PATH}
+                            print("✅ Đã lưu khẩn cấp thành công: faiss_index_partial.zip")
+                        raise Exception("Đã cạn kiệt API Key. Chương trình tự hủy để tránh treo máy vô ích.")
+                        
+                    time.sleep(60) 
                 else:
                     print(f"      ❌ Lỗi lạ ở lô {current_batch}: {error_msg}")
-                    break # Lỗi khác thì bỏ qua lô này luôn
+                    break
         
         # Ngủ nhẹ 5 giây giữa các lô bình thường để không dồn dập
         time.sleep(5) 
