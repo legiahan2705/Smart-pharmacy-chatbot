@@ -30,7 +30,7 @@ print("🔑 Đang lấy API Key...")
 #     raise e
 
 # DÁN TRỰC TIẾP API KEY MỚI VÀO ĐÂY (Nằm trong ngoặc kép)
-api_key = "AIzaSyDWKVqSdeqExPxdNP5Ag67hBhUXYWgMS3g" 
+api_key = "" 
 os.environ["GOOGLE_API_KEY"] = api_key
 
 print("⏳ Đang tải mô hình Google Embeddings (gemini-embedding-001)...")
