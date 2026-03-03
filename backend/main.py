@@ -12,10 +12,9 @@ from typing import TypedDict, Literal
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel 
-from fastapi import FastAPI, UploadFile, File 
+from fastapi import FastAPI, UploadFile, File, Form
 from fastapi.responses import StreamingResponse 
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
 
 # --- LangChain Imports ---
 from langchain_google_genai import ChatGoogleGenerativeAI, GoogleGenerativeAIEmbeddings, HarmBlockThreshold, HarmCategory
@@ -181,6 +180,7 @@ else:
 class AppState(TypedDict):
     question: str
     chat_history: list[str]
+    language: str
     intent_data: dict # Chứa kết quả phân tích gộp (Safety + Route + Keyword)
     context: str | None
     answer: str | None
@@ -198,7 +198,6 @@ Một số đường dây nóng hỗ trợ tâm lý tại Việt Nam mà bạn c
 Hãy nhớ rằng bạn không đơn độc và có sự giúp đỡ dành cho bạn."""
 
 # --- NODE 1: "THE BRAIN" (GỘP SAFETY + ROUTER + EXPANSION) ---
-# Prompt này chứa ĐẦY ĐỦ các ý từ code cũ của bạn, nhưng gộp lại để chạy 1 lần.
 brain_prompt_template = """
 Bạn là bộ não trung tâm của hệ thống AI y tế Long Châu. Nhiệm vụ của bạn là phân tích câu hỏi và trả về kết quả dưới dạng JSON.
 
@@ -231,9 +230,10 @@ Chuyển đổi câu hỏi thành từ khóa tìm kiếm chuyên sâu:
 1. Luôn thêm từ khóa "Thuốc", "Điều trị", "Dược phẩm".
 2. Nếu mô tả triệu chứng, thêm tên các HOẠT CHẤT (Active Ingredients) phổ biến.
 3. Đọc Lịch sử trò chuyện để giải quyết đại từ nhân xưng (nó, thuốc này) nếu cần.
--> Gán kết quả vào trường "keywords".
+4. QUAN TRỌNG NHẤT: Bất kể người dùng hỏi bằng ngôn ngữ nào, các từ khóa trong trường "keywords" BẮT BUỘC phải được dịch sang Tiếng Việt để tìm kiếm trong cơ sở dữ liệu.
 
 INPUT DATA:
+Language: {language}
 History: {chat_history}
 Question: {question}
 
@@ -260,13 +260,21 @@ async def brain_node(state: AppState):
 
     # AI Check (Lớp thông minh)
     try:
-        result = await brain_chain.ainvoke({"question": question, "chat_history": history})
+        # Lấy language từ state (mặc định là 'vi' nếu không có)
+        user_lang = state.get("language", "vi") 
+        
+        result = await brain_chain.ainvoke({
+            "question": question, 
+            "chat_history": history,
+            "language": user_lang  # <--- Truyền vào biến {language} trong prompt
+        })
         print(f"Brain Analysis: {result}")
         return {"intent_data": result}
     except Exception as e:
         print(f"Brain Error: {e}. Fallback to vector search.")
         # Fallback an toàn nếu lỗi JSON
         return {"intent_data": {"is_unsafe": False, "route": "vector_search", "keywords": question}}
+    
 
 # --- NODE 2: RETRIEVE ---
 # --- SỬA LẠI HAM RETRIEVE_NODE ---
@@ -343,6 +351,10 @@ QUY TẮC LOGIC QUAN TRỌNG:
 4. Luôn thêm điều kiện `df['price_int'] > 0`.
 5. KẾT QUẢ: Luôn hiển thị cột `Tên thuốc`, `Giá bán`, `Dạng bào chế`.
 
+LƯU Ý QUAN TRỌNG: Khi kết quả là một DataFrame có nhiều dòng, bạn BẮT BUỘC phải luôn sử dụng .head(5) 
+trước khi gọi .to_string() để chỉ lấy tối đa 5 sản phẩm tiêu biểu nhất, tránh làm tràn bộ nhớ. 
+Ví dụ: result = df[...].head(5).to_string()
+
 Lịch sử trò chuyện: {chat_history}
 Question: {question}
 Python:
@@ -376,6 +388,8 @@ async def structured_analysis_node(state: AppState):
         
     return {"answer": final_answer}
 
+    
+    
 # --- NODE 4: GENERATE (Prompt Đầy Đủ Cũ) ---
 # Prompt này giữ nguyên y hệt bản gốc của bạn
 generate_prompt_template = """
@@ -387,11 +401,11 @@ NGUYÊN TẮC AN TOÀN TUYỆT ĐỐI (SAFETY GUARDRAILS):
 3. KHÔNG THAY THẾ BÁC SĨ: Với các triệu chứng nghiêm trọng, khuyên đi khám ngay.
 4. KHÔNG BỊA ĐẶT: Chỉ trả lời dựa trên Context và Lịch sử.
 
-Lịch sử hội thoại:
-{chat_history}
+Lịch sử hội thoại: {chat_history}
 
-Context:
-{context}
+Context: {context}
+
+Language: {lang_instruction}
 
 Question: {question}
 Answer:
@@ -403,6 +417,12 @@ async def generate_node(state: AppState):
     question = state["question"]
     context = state.get("context", "")
     
+    user_lang = state.get("language", "vi")
+    if user_lang == "en":
+        lang_instruction = "IMPORTANT: You MUST generate your final response entirely in ENGLISH. Translate the medical information accurately from the provided Vietnamese context."
+    else:
+        lang_instruction = "QUAN TRỌNG: Bạn phải trả lời hoàn toàn bằng Tiếng Việt."
+    
     # Nếu không có context thì báo ngay
     if not context:
         print("⚠️ Context rỗng, bỏ qua bước gọi LLM.")
@@ -413,7 +433,8 @@ async def generate_node(state: AppState):
             answer = await rag_generation_chain.ainvoke({
                 "question": question, 
                 "context": context, 
-                "chat_history": history
+                "chat_history": history,
+                "lang_instruction": lang_instruction
             })
             # DEBUG: In câu trả lời ra terminal xem nó có bị rỗng không
             print(f"🤖 AI Answer: {answer}") 
@@ -493,13 +514,14 @@ print("🚀 TURBO BACKEND (FULL PROMPTS) READY!")
 class ChatRequest(BaseModel):
     question: str
     thread_id: str = "default_user"
+    language: str = "vi"
 
 @app.post("/chat")
 async def chat_handler(request: ChatRequest):
     print(f"--> User: {request.question}")
     config = {"configurable": {"thread_id": request.thread_id}}
     
-    result = await rag_agent.ainvoke({"question": request.question}, config=config)
+    result = await rag_agent.ainvoke({"question": request.question, "language": request.language}, config=config)
     
     # Kiểm tra Safety từ kết quả Brain
     intent = result.get("intent_data", {})
@@ -521,8 +543,11 @@ async def text_to_speech(request: ChatRequest):
     Nhận text -> Trả về file âm thanh MP3 (Streaming)
     """
     text = request.question # Lấy đoạn văn bản cần đọc
-    voice = "vi-VN-HoaiMyNeural" # Giọng nữ miền Bắc cực chuẩn
-    # voice = "vi-VN-NamMinhNeural" # Giọng nam (nếu thích)
+    
+    if request.language == "en":
+        voice = "en-US-AriaNeural"  # Giọng nữ tiếng Anh chuẩn Mỹ (rất hay)
+    else:
+        voice = "vi-VN-HoaiMyNeural" # Giọng nữ tiếng Việt (rất tự nhiên)
 
     # Tạo giao tiếp với Edge TTS
     communicate = edge_tts.Communicate(text, voice)
@@ -542,18 +567,27 @@ async def text_to_speech(request: ChatRequest):
 
 # --- B. Speech-to-Text (STT) - Dùng Gemini qua REST API (Không xung đột) ---
 @app.post("/stt")
-async def speech_to_text(file: UploadFile = File(...)):
+async def speech_to_text(
+    file: UploadFile = File(...),
+    language: str = Form("vi")  # <-- Đưa vào đây mới đúng chuẩn FastAPI
+):
     """
     Nhận file âm thanh -> Gửi trực tiếp qua HTTP Request tới Gemini
     """
     # 1. Đọc dữ liệu file
     file_bytes = await file.read()
     
-    # 2. Mã hóa sang Base64 (Để gửi qua mạng)
+    # 2. Mã hóa sang Base64
     base64_audio = base64.b64encode(file_bytes).decode('utf-8')
     
-    # 3. Xác định Mime Type (Mp3, Wav, Webm...)
-    mime_type = "audio/mp3" # Mặc định
+    # 🌟 Chọn prompt theo ngôn ngữ
+    if language == "en":
+        stt_prompt = "Please listen to this audio and transcribe it exactly in English. Return only the transcribed text without any introductory words."
+    else:
+        stt_prompt = "Hãy nghe đoạn âm thanh này và chép lại nguyên văn nội dung bằng tiếng Việt. Chỉ trả về nội dung văn bản, không thêm lời dẫn."
+    
+    # 3. Xác định Mime Type
+    mime_type = "audio/mp3" 
     if file.filename.endswith(".wav"): mime_type = "audio/wav"
     elif file.filename.endswith(".webm"): mime_type = "audio/webm"
     
@@ -564,11 +598,11 @@ async def speech_to_text(file: UploadFile = File(...)):
         
     url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={api_key}"
     
-    # 5. Tạo Payload (Gói tin gửi đi)
+    # 5. Tạo Payload 
     payload = {
         "contents": [{
             "parts": [
-                {"text": "Hãy nghe đoạn âm thanh này và chép lại nguyên văn nội dung bằng tiếng Việt. Chỉ trả về nội dung văn bản, không thêm lời dẫn."},
+                {"text": stt_prompt},                
                 {
                     "inline_data": {
                         "mime_type": mime_type,
@@ -580,11 +614,9 @@ async def speech_to_text(file: UploadFile = File(...)):
     }
 
     try:
-        # 6. Gửi Request
         print("📤 Đang gửi Inline Audio tới Gemini (REST API)...")
         response = requests.post(url, json=payload, headers={"Content-Type": "application/json"})
         
-        # 7. Xử lý kết quả
         if response.status_code == 200:
             result_json = response.json()
             try:
@@ -592,10 +624,8 @@ async def speech_to_text(file: UploadFile = File(...)):
                 print(f"🎙️ Gemini nghe được: {text_result}")
                 return {"text": text_result}
             except KeyError:
-                print(f"❌ Gemini không trả về text. Response: {result_json}")
                 return {"text": ""}
         else:
-            print(f"❌ Lỗi API ({response.status_code}): {response.text}")
             return {"text": ""}
 
     except Exception as e:
@@ -608,19 +638,18 @@ async def speech_to_text(file: UploadFile = File(...)):
 @app.post("/chat-voice-flow")
 async def chat_voice_flow(
     file: UploadFile = File(...), 
-    thread_id: str = "default_user"
+    thread_id: str = Form("default_user"), 
+    language: str = Form("vi")
 ):
     """
     Quy trình Full: Nhận Audio -> STT -> Agent xử lý -> TTS -> Trả về JSON (Text + Audio Base64)
     """
-    print(f"🎤 Nhận yêu cầu Voice Chat từ user: {thread_id}")
+    print(f"🎤 Nhận yêu cầu Voice Chat từ user: {thread_id} (Ngôn ngữ: {language})")
 
     # --- BƯỚC 1: STT (Speech to Text) ---
-    # Tái sử dụng logic gọi Gemini API
     file_bytes = await file.read()
     base64_audio = base64.b64encode(file_bytes).decode('utf-8')
     
-    # Xác định loại file
     mime_type = "audio/mp3"
     if file.filename.endswith(".wav"): mime_type = "audio/wav"
     elif file.filename.endswith(".webm"): mime_type = "audio/webm"
@@ -628,10 +657,13 @@ async def chat_voice_flow(
     api_key = os.environ.get("GOOGLE_API_KEY")
     stt_url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={api_key}"
     
+    # 🌟 Chọn prompt STT
+    stt_prompt = "Please listen to this audio and transcribe it exactly in English. Return only the transcribed text without any introductory words." if language == "en" else "Hãy nghe đoạn âm thanh này và chép lại nguyên văn nội dung bằng tiếng Việt. Chỉ trả về nội dung văn bản, không thêm lời dẫn."
+    
     stt_payload = {
         "contents": [{
             "parts": [
-                {"text": "Hãy nghe đoạn âm thanh này và chép lại nguyên văn nội dung bằng tiếng Việt. Chỉ trả về nội dung văn bản, không thêm lời dẫn."},
+                {"text": stt_prompt},
                 {"inline_data": {"mime_type": mime_type, "data": base64_audio}}
             ]
         }]
@@ -644,7 +676,6 @@ async def chat_voice_flow(
             user_text = resp.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
             print(f"   -> Nghe được: {user_text}")
         else:
-            print(f"   -> Lỗi STT: {resp.text}")
             return {"error": "Không nghe rõ giọng nói"}
     except Exception as e:
         return {"error": f"Lỗi kết nối STT: {str(e)}"}
@@ -655,9 +686,13 @@ async def chat_voice_flow(
     # --- BƯỚC 2: AGENT THINKING (LangGraph) ---
     print(f"   -> Agent đang suy nghĩ...")
     config = {"configurable": {"thread_id": thread_id}}
-    result = await rag_agent.ainvoke({"question": user_text}, config=config)
     
-    # Xử lý Safety
+    # 🌟 TRUYỀN NGÔN NGỮ VÀO CHO THE BRAIN DỊCH THUẬT
+    result = await rag_agent.ainvoke({
+        "question": user_text,
+        "language": language
+    }, config=config)
+    
     intent = result.get("intent_data", {})
     if intent.get("is_unsafe"):
         bot_answer = EMPATHETIC_SAFETY_MESSAGE
@@ -668,20 +703,21 @@ async def chat_voice_flow(
 
     # --- BƯỚC 3: TTS (Text to Speech) ---
     print(f"   -> Đang chuyển văn bản sang giọng nói...")
-    communicate = edge_tts.Communicate(bot_answer, "vi-VN-HoaiMyNeural")
     
-    # Ghi audio vào bộ nhớ đệm
+    # 🌟 CHỌN GIỌNG ĐỌC THEO NGÔN NGỮ
+    voice = "en-US-AriaNeural" if language == "en" else "vi-VN-HoaiMyNeural"
+    communicate = edge_tts.Communicate(bot_answer, voice)
+    
     audio_stream = io.BytesIO()
     async for chunk in communicate.stream():
         if chunk["type"] == "audio":
             audio_stream.write(chunk["data"])
     
-    # Chuyển audio thành Base64 để gửi kèm JSON
     audio_base64 = base64.b64encode(audio_stream.getvalue()).decode('utf-8')
 
     # --- KẾT QUẢ TRẢ VỀ ---
     return {
-        "user_text": user_text,   # Để hiện lên màn hình chat phía user
-        "bot_answer": bot_answer, # Để hiện câu trả lời chữ
-        "audio_base64": audio_base64 # Để Frontend phát âm thanh
+        "user_text": user_text,   
+        "bot_answer": bot_answer, 
+        "audio_base64": audio_base64 
     }

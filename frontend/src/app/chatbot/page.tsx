@@ -26,13 +26,17 @@ import { v4 as uuidv4 } from "uuid";
 import ReactMarkdown from "react-markdown";
 
 // --- API CALL ---
-async function askAgent(userInput: string, threadId: string) {
+async function askAgent(userInput: string, threadId: string, lang: string) {
   try {
     const apiUrl = process.env.NEXT_PUBLIC_API_URL || "http://127.0.0.1:8000";
     const response = await fetch(`${apiUrl}/chat`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ question: userInput, thread_id: threadId }),
+      body: JSON.stringify({
+        question: userInput,
+        thread_id: threadId,
+        language: lang,
+      }),
     });
     if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
     const data = await response.json();
@@ -78,9 +82,21 @@ export default function ChatbotPage() {
         history: "HISTORY",
         backHome: "Back to Home",
       },
-      header: { title: "Smart Medicine Assistant", status: "Online" },
+      header: {
+        title: "Smart Medicine Assistant",
+        status: "Online",
+      },
       typingStatuses: ["Thinking...", "Searching database..."],
-      input: { placeholder: "Ask me anything...", recording: "Listening..." },
+      input: {
+        placeholder: "Ask me anything...",
+        recording: "Listening...",
+      },
+      welcome: "Hello! I am your smart medical assistant.",
+      buttons: {
+        stopRead: "STOP",
+        readAloud: "READ ALOUD",
+      },
+      footer: "AI Assistant - Does not replace professional medical advice",
     },
     vi: {
       sidebar: {
@@ -89,12 +105,21 @@ export default function ChatbotPage() {
         history: "LỊCH SỬ TRÒ CHUYỆN",
         backHome: "Về trang chủ",
       },
-      header: { title: "Trợ Lý Y Tế Thông Minh", status: "Đang hoạt động" },
+      header: {
+        title: "Trợ Lý Y Tế Thông Minh",
+        status: "Đang hoạt động",
+      },
       typingStatuses: ["Đang suy nghĩ...", "Đang tra cứu dữ liệu..."],
       input: {
         placeholder: "Nhập câu hỏi của bạn...",
         recording: "Đang nghe bạn nói...",
       },
+      welcome: "Xin chào! Tôi là trợ lý y tế thông minh.",
+      buttons: {
+        stopRead: "DỪNG ĐỌC",
+        readAloud: "NGHE NỘI DUNG",
+      },
+      footer: "Trợ lý AI - Không thay thế lời khuyên y khoa chuyên nghiệp",
     },
   };
   const t = content[language];
@@ -102,6 +127,17 @@ export default function ChatbotPage() {
   useEffect(() => {
     setMounted(true);
   }, []);
+
+  useEffect(() => {
+    setMessages((prev) =>
+      prev.map((m) => {
+        if (m.id === "welcome") {
+          return { ...m, content: t.welcome };
+        }
+        return m;
+      }),
+    );
+  }, [language, t.welcome]);
 
   const ActiveVolumeIcon = () => (
     <div className="relative flex items-center justify-center w-4 h-4 mr-1">
@@ -203,7 +239,7 @@ export default function ChatbotPage() {
     );
 
     try {
-      const botAnswer = await askAgent(text, currentThreadId);
+      const botAnswer = await askAgent(text, currentThreadId, language);
 
       // Kiểm tra xem người dùng có nhấn nút dừng khi đang gọi API không
       if (abortControllerRef.current) return;
@@ -274,7 +310,7 @@ export default function ChatbotPage() {
         const res = await fetch(`${apiUrl}/tts`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ question: chunks[index] }),
+          body: JSON.stringify({ question: chunks[index], language: language }),
         });
         const audioBlob = await res.blob();
         const audio = new Audio(URL.createObjectURL(audioBlob));
@@ -324,9 +360,12 @@ export default function ChatbotPage() {
 
   const createNewSession = () => {
     const id = uuidv4();
-    const sess = { id, title: "Hội thoại mới", updatedAt: new Date() };
+    const sess = {
+      id,
+      title: language === "vi" ? "Hội thoại mới" : "New Chat",
+      updatedAt: new Date(),
+    };
 
-    // SỬA Ở ĐÂY: Lưu danh sách session vào State VÀ cả LocalStorage
     setSessions((prev) => {
       const updatedSessions = [sess, ...prev];
       localStorage.setItem("chat_sessions", JSON.stringify(updatedSessions));
@@ -339,7 +378,7 @@ export default function ChatbotPage() {
         id: "welcome",
         type: "bot",
         timestamp: new Date(),
-        content: "Xin chào! Tôi là trợ lý y tế thông minh.",
+        content: t.welcome,
       },
     ]);
   };
@@ -360,7 +399,7 @@ export default function ChatbotPage() {
           id: "welcome",
           type: "bot",
           timestamp: new Date(),
-          content: "Xin chào! Tôi là trợ lý y tế thông minh.",
+          content: t.welcome,
         },
       ]);
   };
@@ -395,12 +434,12 @@ export default function ChatbotPage() {
             onClick={createNewSession}
             className="w-full bg-[#072D94] text-white rounded-xl shadow-md py-6 font-semibold"
           >
-            + Hội thoại mới
+            {t.sidebar.newChat}
           </Button>
         </div>
         <div className="flex-1 overflow-y-auto p-3 space-y-1">
           <p className="px-3 py-2 text-[11px] font-bold text-slate-400 uppercase tracking-widest">
-            LỊCH SỬ
+            {t.sidebar.history}
           </p>
           {mounted &&
             sessions.map((s) => (
@@ -449,11 +488,11 @@ export default function ChatbotPage() {
               </div>
               <div>
                 <h1 className="font-bold text-[#072D94] leading-tight">
-                  Trợ Lý Y Tế Thông Minh
+                  {t.header.title}
                 </h1>
                 <p className="text-[11px] text-green-500 font-medium flex items-center gap-1">
                   <span className="w-1.5 h-1.5 bg-green-500 rounded-full animate-pulse"></span>{" "}
-                  Đang hoạt động
+                  {t.header.status}
                 </p>
               </div>
             </div>
@@ -533,19 +572,14 @@ export default function ChatbotPage() {
                             <Volume2 size={14} />
                           )}
                           {speakingMessageId === m.id
-                            ? "DỪNG ĐỌC"
-                            : "NGHE NỘI DUNG"}
+                            ? t.buttons.stopRead
+                            : t.buttons.readAloud}
                         </button>
                       </div>
                     )}
                   </div>
                   <p className="text-[10px] text-slate-400 mt-2 px-1 font-medium">
-                    {mounted
-                      ? new Date(m.timestamp).toLocaleTimeString([], {
-                          hour: "2-digit",
-                          minute: "2-digit",
-                        })
-                      : "--:--"}
+                    {t.footer}
                   </p>
                 </div>
               </div>
@@ -628,7 +662,7 @@ export default function ChatbotPage() {
               </button>
             </div>
             <p className="text-[10px] text-center text-slate-400 mt-3 font-medium opacity-70">
-              AI Assistant - Không thay thế lời khuyên y khoa chuyên nghiệp
+              {t.footer}
             </p>
           </div>
         </div>
